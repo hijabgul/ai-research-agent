@@ -1,4 +1,3 @@
-%%writefile app.py
 
 import os
 import requests
@@ -28,52 +27,36 @@ st.set_page_config(
 # CUSTOM CSS
 # ============================================================
 
-st.markdown(
-    """
-    <style>
+st.markdown("""
+<style>
 
-    .stApp {
-        background-color: #0B1020;
-        color: #F8FAFC;
-    }
+.stApp {
+    background-color: #0B1020;
+    color: #F8FAFC;
+}
 
-    .main-title {
-        font-size: 42px;
-        font-weight: 700;
-        margin-bottom: 5px;
-    }
+.main-title {
+    font-size: 42px;
+    font-weight: 700;
+    margin-bottom: 5px;
+}
 
-    .subtitle {
-        color: #94A3B8;
-        font-size: 17px;
-        margin-bottom: 30px;
-    }
+.subtitle {
+    color: #94A3B8;
+    font-size: 17px;
+    margin-bottom: 30px;
+}
 
-    .research-box {
-        background-color: #111827;
-        padding: 22px;
-        border-radius: 14px;
-        border: 1px solid #263244;
-        margin-top: 20px;
-    }
+.research-box {
+    background-color: #111827;
+    padding: 22px;
+    border-radius: 14px;
+    border: 1px solid #263244;
+    margin-top: 20px;
+}
 
-    .source-box {
-        background-color: #111827;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #263244;
-        margin-bottom: 10px;
-    }
-
-    .source-url {
-        color: #818CF8;
-        word-break: break-all;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+</style>
+""", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -99,18 +82,12 @@ st.markdown(
 # ============================================================
 
 if "GROQ_API_KEY" not in st.secrets:
-
     st.error(
-        "GROQ_API_KEY was not found in Streamlit Secrets. "
-        "Please add it in your Streamlit Cloud Secrets."
+        "GROQ_API_KEY was not found in Streamlit Secrets."
     )
-
     st.stop()
 
-
 groq_api_key = st.secrets["GROQ_API_KEY"]
-
-os.environ["GROQ_API_KEY"] = groq_api_key
 
 
 # ============================================================
@@ -153,8 +130,7 @@ def extract_webpage(url, max_chars=12000):
             "lxml"
         )
 
-        # Remove unnecessary webpage elements
-        for tag in soup([
+        for tag in [
             "script",
             "style",
             "nav",
@@ -162,9 +138,11 @@ def extract_webpage(url, max_chars=12000):
             "header",
             "aside",
             "form"
-        ]):
+        ]:
+            tag_element = soup.find_all(tag)
 
-            tag.decompose()
+            for element in tag_element:
+                element.decompose()
 
         text = " ".join(
             soup.get_text(
@@ -214,53 +192,31 @@ def research_search(query, max_results=8):
 
     for result in search_results:
 
-        title = result.get(
-            "title",
-            ""
-        )
-
-        url = result.get(
-            "href",
-            ""
-        )
-
-        snippet = result.get(
-            "body",
-            ""
-        )
+        title = result.get("title", "")
+        url = result.get("href", "")
+        snippet = result.get("body", "")
 
         if not url:
             continue
 
         page = extract_webpage(url)
 
-        source = {
+        sources.append({
             "title": title,
             "url": url,
             "snippet": snippet,
-            "accessible": page.get(
-                "success",
-                False
-            ),
-            "domain": page.get(
-                "domain",
-                ""
-            ),
-            "content": page.get(
-                "text",
-                ""
-            )
+            "accessible": page.get("success", False),
+            "domain": page.get("domain", ""),
+            "content": page.get("text", "")
             if page.get("success")
             else ""
-        }
-
-        sources.append(source)
+        })
 
     return sources
 
 
 # ============================================================
-# CREWAI TOOL INPUT
+# CREWAI TOOL
 # ============================================================
 
 class ResearchSearchInput(BaseModel):
@@ -271,26 +227,19 @@ class ResearchSearchInput(BaseModel):
     )
 
 
-# ============================================================
-# CREWAI CUSTOM TOOL
-# ============================================================
-
 class ResearchSearchTool(BaseTool):
 
     name: str = "web_research_search"
 
     description: str = (
         "Search the live web using DDGS and read accessible "
-        "web pages. Returns titles, original URLs, snippets, "
-        "domains, and extracted webpage content."
+        "web pages. Returns original URLs and extracted "
+        "source content."
     )
 
     args_schema: type[BaseModel] = ResearchSearchInput
 
-    def _run(
-        self,
-        query: str
-    ) -> str:
+    def _run(self, query: str) -> str:
 
         sources = research_search(
             query=query,
@@ -298,15 +247,11 @@ class ResearchSearchTool(BaseTool):
         )
 
         if not sources:
-
             return "No usable sources were found."
 
         output = []
 
-        for i, source in enumerate(
-            sources,
-            1
-        ):
+        for i, source in enumerate(sources, 1):
 
             if "error" in source:
 
@@ -331,9 +276,6 @@ DOMAIN:
 
 SEARCH SNIPPET:
 {source["snippet"]}
-
-ACCESSIBLE:
-{source["accessible"]}
 
 SOURCE CONTENT:
 {source["content"][:8000]}
@@ -370,27 +312,19 @@ research_agent = Agent(
     backstory="""
     You are a meticulous professional research analyst.
 
-    You understand that an AI model's internal knowledge should
-    not be treated as sufficient evidence for current factual
-    claims.
+    You use live web research for current factual information.
 
-    You therefore use live web research and inspect source
-    material whenever possible.
+    You inspect original source material whenever possible.
 
     You distinguish documented facts from interpretation.
 
-    When reliable sources disagree, you clearly explain the
-    disagreement.
+    When sources disagree, clearly explain the disagreement.
 
-    When sufficient evidence cannot be found, you explicitly
-    say so rather than inventing an answer.
-
-    Every important factual claim should be traceable to a source.
+    When reliable evidence is insufficient, say so instead of
+    inventing information.
     """,
 
-    tools=[
-        research_tool
-    ],
+    tools=[research_tool],
 
     llm=crew_llm,
 
@@ -408,46 +342,28 @@ research_task = Task(
 
     description="""
 
-    Research the following question:
+    Research this question:
 
     {topic}
 
-    Follow these requirements:
+    Requirements:
 
     1. Understand the research question.
-
-    2. Break it into important sub-questions when necessary.
-
+    2. Break it into sub-questions when necessary.
     3. Perform multiple focused web searches.
-
     4. Use the web_research_search tool.
-
     5. Prefer primary and authoritative sources.
-
-    6. Read actual webpage content rather than relying only
-       on search snippets.
-
+    6. Read actual webpage content.
     7. For current questions, prioritize recent information.
-
-    8. Cross-check important factual claims.
-
-    9. Identify meaningful disagreements between sources.
-
+    8. Cross-check important claims.
+    9. Identify meaningful disagreements.
     10. Never invent facts, sources, URLs, statistics,
         quotations, or evidence.
+    11. Include original source URLs.
+    12. Distinguish facts from interpretation.
+    13. Explain limitations.
 
-    11. Do not claim a source supports something unless its
-        retrieved content supports the claim.
-
-    12. If reliable evidence is insufficient, say so clearly.
-
-    13. Include original source URLs.
-
-    14. Distinguish facts from interpretation.
-
-    15. Explain important limitations.
-
-    Produce a detailed report containing:
+    Produce:
 
     - Executive Summary
     - Research Question
@@ -460,23 +376,15 @@ research_task = Task(
     - Conclusion
     - Sources
 
-    Important factual claims must be traceable to retrieved
-    sources.
+    Important factual claims must be traceable to sources.
     """,
 
     expected_output="""
-    A detailed evidence-based research report containing:
-
-    1. Executive Summary
-    2. Research Question
-    3. Key Findings
-    4. Background
-    5. Detailed Analysis
-    6. Evidence
-    7. Conflicting Information
-    8. Limitations
-    9. Conclusion
-    10. Numbered Sources with original URLs
+    A detailed evidence-based research report with:
+    Executive Summary, Research Question, Key Findings,
+    Background, Detailed Analysis, Evidence, Conflicting
+    Information, Limitations, Conclusion, and numbered
+    original source URLs.
 
     Do not fabricate information.
     """,
@@ -491,13 +399,9 @@ research_task = Task(
 
 research_crew = Crew(
 
-    agents=[
-        research_agent
-    ],
+    agents=[research_agent],
 
-    tasks=[
-        research_task
-    ],
+    tasks=[research_task],
 
     process=Process.sequential,
 
@@ -506,7 +410,7 @@ research_crew = Crew(
 
 
 # ============================================================
-# STREAMLIT INPUT
+# USER INTERFACE
 # ============================================================
 
 st.markdown(
@@ -578,7 +482,7 @@ if research_button:
 
 
 # ============================================================
-# DISPLAY RESULT
+# DISPLAY REPORT
 # ============================================================
 
 if "research_result" in st.session_state:
