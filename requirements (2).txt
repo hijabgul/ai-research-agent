@@ -1,0 +1,10 @@
+
+streamlit
+crewai
+ddgs
+requests
+beautifulsoup4
+lxml
+pydantic
+groq
+python-dotenv
