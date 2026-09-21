@@ -1,3 +1,4 @@
+%%writefile app.py
 
 import os
 import requests
@@ -27,8 +28,9 @@ st.set_page_config(
 # CUSTOM CSS
 # ============================================================
 
-st.markdown("""
-<style>
+st.markdown(
+    """
+    <style>
 
     .stApp {
         background-color: #0B1020;
@@ -68,8 +70,10 @@ st.markdown("""
         word-break: break-all;
     }
 
-</style>
-""", unsafe_allow_html=True)
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 
 # ============================================================
@@ -91,15 +95,18 @@ st.markdown(
 
 
 # ============================================================
-# GROQ CONFIGURATION
+# GROQ API KEY
 # ============================================================
 
 if "GROQ_API_KEY" not in st.secrets:
+
     st.error(
         "GROQ_API_KEY was not found in Streamlit Secrets. "
-        "Add it in your app's Secrets settings."
+        "Please add it in your Streamlit Cloud Secrets."
     )
+
     st.stop()
+
 
 groq_api_key = st.secrets["GROQ_API_KEY"]
 
@@ -141,8 +148,12 @@ def extract_webpage(url, max_chars=12000):
 
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(
+            response.text,
+            "lxml"
+        )
 
+        # Remove unnecessary webpage elements
         for tag in soup([
             "script",
             "style",
@@ -152,10 +163,14 @@ def extract_webpage(url, max_chars=12000):
             "aside",
             "form"
         ]):
+
             tag.decompose()
 
         text = " ".join(
-            soup.get_text(" ", strip=True).split()
+            soup.get_text(
+                " ",
+                strip=True
+            ).split()
         )
 
         return {
@@ -189,37 +204,63 @@ def research_search(query, max_results=8):
 
     except Exception as e:
 
-        return [{
-            "error": f"Search failed: {str(e)}"
-        }]
+        return [
+            {
+                "error": f"Search failed: {str(e)}"
+            }
+        ]
 
     sources = []
 
     for result in search_results:
 
-        title = result.get("title", "")
-        url = result.get("href", "")
-        snippet = result.get("body", "")
+        title = result.get(
+            "title",
+            ""
+        )
+
+        url = result.get(
+            "href",
+            ""
+        )
+
+        snippet = result.get(
+            "body",
+            ""
+        )
 
         if not url:
             continue
 
         page = extract_webpage(url)
 
-        sources.append({
+        source = {
             "title": title,
             "url": url,
             "snippet": snippet,
-            "accessible": page.get("success", False),
-            "domain": page.get("domain", ""),
-            "content": page.get("text", "")
-        })
+            "accessible": page.get(
+                "success",
+                False
+            ),
+            "domain": page.get(
+                "domain",
+                ""
+            ),
+            "content": page.get(
+                "text",
+                ""
+            )
+            if page.get("success")
+            else ""
+        }
+
+        sources.append(source)
 
     return sources
 
 
 # ============================================================
-# CREWAI TOOL
+# CREWAI TOOL INPUT
 # ============================================================
 
 class ResearchSearchInput(BaseModel):
@@ -229,6 +270,10 @@ class ResearchSearchInput(BaseModel):
         description="The web research query to search for."
     )
 
+
+# ============================================================
+# CREWAI CUSTOM TOOL
+# ============================================================
 
 class ResearchSearchTool(BaseTool):
 
@@ -242,7 +287,10 @@ class ResearchSearchTool(BaseTool):
 
     args_schema: type[BaseModel] = ResearchSearchInput
 
-    def _run(self, query: str) -> str:
+    def _run(
+        self,
+        query: str
+    ) -> str:
 
         sources = research_search(
             query=query,
@@ -250,14 +298,22 @@ class ResearchSearchTool(BaseTool):
         )
 
         if not sources:
+
             return "No usable sources were found."
 
         output = []
 
-        for i, source in enumerate(sources, 1):
+        for i, source in enumerate(
+            sources,
+            1
+        ):
 
             if "error" in source:
-                output.append(source["error"])
+
+                output.append(
+                    source["error"]
+                )
+
                 continue
 
             output.append(
@@ -314,8 +370,9 @@ research_agent = Agent(
     backstory="""
     You are a meticulous professional research analyst.
 
-    You know that an AI model's internal knowledge should not be
-    treated as sufficient evidence for current factual claims.
+    You understand that an AI model's internal knowledge should
+    not be treated as sufficient evidence for current factual
+    claims.
 
     You therefore use live web research and inspect source
     material whenever possible.
@@ -331,7 +388,9 @@ research_agent = Agent(
     Every important factual claim should be traceable to a source.
     """,
 
-    tools=[research_tool],
+    tools=[
+        research_tool
+    ],
 
     llm=crew_llm,
 
@@ -356,22 +415,36 @@ research_task = Task(
     Follow these requirements:
 
     1. Understand the research question.
+
     2. Break it into important sub-questions when necessary.
+
     3. Perform multiple focused web searches.
+
     4. Use the web_research_search tool.
+
     5. Prefer primary and authoritative sources.
+
     6. Read actual webpage content rather than relying only
        on search snippets.
+
     7. For current questions, prioritize recent information.
+
     8. Cross-check important factual claims.
+
     9. Identify meaningful disagreements between sources.
+
     10. Never invent facts, sources, URLs, statistics,
         quotations, or evidence.
+
     11. Do not claim a source supports something unless its
         retrieved content supports the claim.
+
     12. If reliable evidence is insufficient, say so clearly.
+
     13. Include original source URLs.
+
     14. Distinguish facts from interpretation.
+
     15. Explain important limitations.
 
     Produce a detailed report containing:
@@ -392,16 +465,18 @@ research_task = Task(
     """,
 
     expected_output="""
-    A detailed evidence-based research report with:
+    A detailed evidence-based research report containing:
 
-    1. Executive summary
-    2. Key findings
-    3. Detailed analysis
-    4. Evidence-backed claims
-    5. Conflicting information
-    6. Limitations
-    7. Conclusion
-    8. Numbered source list containing original URLs
+    1. Executive Summary
+    2. Research Question
+    3. Key Findings
+    4. Background
+    5. Detailed Analysis
+    6. Evidence
+    7. Conflicting Information
+    8. Limitations
+    9. Conclusion
+    10. Numbered Sources with original URLs
 
     Do not fabricate information.
     """,
@@ -416,9 +491,13 @@ research_task = Task(
 
 research_crew = Crew(
 
-    agents=[research_agent],
+    agents=[
+        research_agent
+    ],
 
-    tasks=[research_task],
+    tasks=[
+        research_task
+    ],
 
     process=Process.sequential,
 
@@ -435,7 +514,9 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.subheader("What do you want to research?")
+st.subheader(
+    "What do you want to research?"
+)
 
 topic = st.text_area(
     "Research question",
@@ -453,7 +534,7 @@ research_button = st.button(
 )
 
 st.markdown(
-    '</div>',
+    "</div>",
     unsafe_allow_html=True
 )
 
@@ -466,7 +547,9 @@ if research_button:
 
     if not topic.strip():
 
-        st.warning("Please enter a research question.")
+        st.warning(
+            "Please enter a research question."
+        )
 
     else:
 
@@ -483,7 +566,9 @@ if research_button:
                     }
                 )
 
-                st.session_state["research_result"] = str(result)
+                st.session_state[
+                    "research_result"
+                ] = str(result)
 
             except Exception as e:
 
@@ -500,7 +585,9 @@ if "research_result" in st.session_state:
 
     st.markdown("---")
 
-    st.subheader("📄 Research Report")
+    st.subheader(
+        "📄 Research Report"
+    )
 
     st.markdown(
         st.session_state["research_result"]
