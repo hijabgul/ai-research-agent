@@ -1,21 +1,19 @@
+```python
 import io
 import re
 import requests
 import streamlit as st
 
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 from ddgs import DDGS
 
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
@@ -23,6 +21,7 @@ from reportlab.platypus import (
     ListFlowable,
     ListItem
 )
+from xml.sax.saxutils import escape
 
 
 # ============================================================
@@ -48,7 +47,7 @@ if "research_topic" not in st.session_state:
 
 
 # ============================================================
-# CUSTOM CSS
+# PROFESSIONAL UI
 # ============================================================
 
 st.markdown(
@@ -56,38 +55,58 @@ st.markdown(
     <style>
 
     .stApp {
-        background-color: #0B1020;
+        background-color: #0B1120;
         color: #F8FAFC;
     }
 
-    .main .block-container {
-        max-width: 1250px;
-        padding-top: 2rem;
-        padding-bottom: 4rem;
-    }
-
     .main-title {
-        font-size: 44px;
+        font-size: 42px;
         font-weight: 800;
         color: #F8FAFC;
         margin-bottom: 5px;
     }
 
     .subtitle {
-        color: #94A3B8;
         font-size: 17px;
-        margin-bottom: 28px;
+        color: #94A3B8;
+        margin-bottom: 30px;
     }
 
-    .research-box {
+    .workflow-card {
         background-color: #111827;
-        padding: 25px;
-        border-radius: 16px;
-        border: 1px solid #263244;
-        margin-top: 20px;
-        margin-bottom: 25px;
+        border: 1px solid #1E293B;
+        border-radius: 12px;
+        padding: 18px 10px;
+        text-align: center;
+        min-height: 120px;
     }
 
+    .workflow-icon {
+        font-size: 28px;
+        margin-bottom: 8px;
+    }
+
+    .workflow-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: #F8FAFC;
+    }
+
+    .workflow-description {
+        font-size: 12px;
+        color: #94A3B8;
+        margin-top: 5px;
+    }
+
+    .section-title {
+        font-size: 25px;
+        font-weight: 750;
+        color: #F8FAFC;
+        margin-top: 25px;
+        margin-bottom: 15px;
+    }
+
+    /* Research input */
     textarea {
         background-color: #0F172A !important;
         color: #F8FAFC !important;
@@ -98,62 +117,15 @@ st.markdown(
 
     textarea::placeholder {
         color: #64748B !important;
-        opacity: 1 !important;
     }
 
-    label {
-        color: #E2E8F0 !important;
-    }
-
-    .stButton > button {
-        border-radius: 10px;
-        font-weight: 700;
-        min-height: 45px;
-    }
-
-    .workflow-card {
+    /* Report */
+    .report-box {
         background-color: #111827;
-        border: 1px solid #263244;
-        border-radius: 14px;
-        padding: 18px;
-        text-align: center;
-        min-height: 130px;
-    }
-
-    .workflow-icon {
-        font-size: 28px;
-        margin-bottom: 7px;
-    }
-
-    .workflow-title {
-        font-weight: 700;
-        color: #F8FAFC;
-        font-size: 15px;
-    }
-
-    .workflow-description {
-        color: #94A3B8;
-        font-size: 12px;
-        margin-top: 5px;
-    }
-
-    .report-container {
-        background-color: #111827;
-        border: 1px solid #263244;
-        border-radius: 16px;
-        padding: 28px;
-        margin-top: 20px;
-    }
-
-    [data-testid="stMetric"] {
-        background-color: #111827;
-        border: 1px solid #263244;
-        padding: 15px;
+        border: 1px solid #1E293B;
         border-radius: 12px;
-    }
-
-    hr {
-        border-color: #263244 !important;
+        padding: 25px;
+        margin-top: 15px;
     }
 
     </style>
@@ -172,38 +144,14 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="subtitle">'
-    'An evidence-based AI research agent that searches the live web, '
-    'reads original sources, cross-checks evidence, and produces a '
-    'traceable research report.'
-    '</div>',
+    """
+    <div class="subtitle">
+        AI-powered web research using current online sources,
+        evidence extraction, cross-checking, and detailed
+        report generation.
+    </div>
+    """,
     unsafe_allow_html=True
-)
-
-
-# ============================================================
-# GROQ API KEY
-# ============================================================
-
-if "GROQ_API_KEY" not in st.secrets:
-    st.error(
-        "GROQ_API_KEY was not found in Streamlit Secrets."
-    )
-    st.stop()
-
-groq_api_key = st.secrets["GROQ_API_KEY"]
-
-
-# ============================================================
-# GROQ MODEL
-# ============================================================
-
-GROQ_MODEL = "groq/openai/gpt-oss-120b"
-
-crew_llm = LLM(
-    model=GROQ_MODEL,
-    api_key=groq_api_key,
-    temperature=0.2
 )
 
 
@@ -211,33 +159,34 @@ crew_llm = LLM(
 # WORKFLOW
 # ============================================================
 
-st.markdown("### ⚙️ How ResearchAI Works")
+st.markdown(
+    '<div class="section-title">Research Workflow</div>',
+    unsafe_allow_html=True
+)
 
-workflow = [
-    ("📝", "Input", "Your research question"),
-    ("🧠", "Plan", "Break the question into research areas"),
-    ("🌐", "Search", "Search current web sources"),
-    ("📄", "Extract", "Read original webpages"),
-    ("🔍", "Cross-check", "Compare important evidence"),
-    ("🤖", "Analyze", "Analyze collected evidence"),
-    ("📑", "Report", "Generate the final report")
+workflow = st.columns(7)
+
+workflow_steps = [
+    ("📝", "Input", "Research question"),
+    ("🧠", "Plan", "Research strategy"),
+    ("🔎", "Search", "Find sources"),
+    ("📄", "Extract", "Read webpages"),
+    ("⚖️", "Cross-check", "Compare evidence"),
+    ("🤖", "Analyze", "AI reasoning"),
+    ("📊", "Report", "Final report"),
 ]
 
-columns = st.columns(len(workflow))
+for col, step in zip(workflow, workflow_steps):
 
-for column, item in zip(columns, workflow):
-
-    icon, title, description = item
-
-    with column:
+    with col:
 
         st.markdown(
             f"""
             <div class="workflow-card">
-                <div class="workflow-icon">{icon}</div>
-                <div class="workflow-title">{title}</div>
+                <div class="workflow-icon">{step[0]}</div>
+                <div class="workflow-title">{step[1]}</div>
                 <div class="workflow-description">
-                    {description}
+                    {step[2]}
                 </div>
             </div>
             """,
@@ -246,23 +195,64 @@ for column, item in zip(columns, workflow):
 
 
 # ============================================================
+# GROQ API KEY
+# ============================================================
+
+try:
+
+    groq_api_key = st.secrets["GROQ_API_KEY"]
+
+except Exception:
+
+    st.error(
+        "GROQ_API_KEY was not found in Streamlit Cloud Secrets."
+    )
+
+    st.info(
+        "Go to Manage app → Settings → Secrets and make sure "
+        "GROQ_API_KEY is configured."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# GROQ + CREWAI MODEL CONFIGURATION
+# ============================================================
+
+# Groq-hosted model
+GROQ_MODEL = "groq/openai/gpt-oss-120b"
+
+
+# CrewAI LLM
+crew_llm = LLM(
+    model=GROQ_MODEL,
+    api_key=groq_api_key,
+    temperature=0.2
+)
+
+
+# ============================================================
 # WEBPAGE EXTRACTION
 # ============================================================
 
-def extract_webpage(url, max_chars=12000):
+def extract_webpage(url):
 
     try:
 
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/120.0 Safari/537.36"
+            )
+        }
+
         response = requests.get(
             url,
-            timeout=15,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 "
-                    "Chrome/130 Safari/537.36"
-                )
-            }
+            headers=headers,
+            timeout=15
         )
 
         response.raise_for_status()
@@ -272,109 +262,119 @@ def extract_webpage(url, max_chars=12000):
             "lxml"
         )
 
-        for tag in [
-            "script",
-            "style",
-            "nav",
-            "footer",
-            "header",
-            "aside",
-            "form"
-        ]:
+        # Remove unnecessary page elements
+        for element in soup(
+            [
+                "script",
+                "style",
+                "nav",
+                "footer",
+                "header",
+                "aside",
+                "form"
+            ]
+        ):
+            element.decompose()
 
-            for element in soup.find_all(tag):
-                element.decompose()
-
-        text = " ".join(
-            soup.get_text(
-                " ",
-                strip=True
-            ).split()
+        text = soup.get_text(
+            separator=" ",
+            strip=True
         )
 
-        return {
-            "success": True,
-            "url": url,
-            "domain": urlparse(url).netloc,
-            "text": text[:max_chars]
-        }
+        # Remove excessive spaces
+        text = re.sub(
+            r"\s+",
+            " ",
+            text
+        )
+
+        # Limit webpage size
+        return text[:15000]
 
     except Exception as e:
 
-        return {
-            "success": False,
-            "url": url,
-            "error": str(e)
-        }
+        return (
+            f"Unable to extract webpage content. "
+            f"Error: {str(e)}"
+        )
 
 
 # ============================================================
 # WEB SEARCH
 # ============================================================
 
-def research_search(query, max_results=8):
+def research_search(
+    query,
+    max_results=8
+):
+
+    results = []
 
     try:
 
-        search_results = DDGS().text(
-            query,
-            max_results=max_results
-        )
+        with DDGS() as ddgs:
+
+            search_results = list(
+                ddgs.text(
+                    query,
+                    max_results=max_results
+                )
+            )
+
+        for result in search_results:
+
+            title = result.get(
+                "title",
+                ""
+            )
+
+            url = result.get(
+                "href",
+                ""
+            )
+
+            snippet = result.get(
+                "body",
+                ""
+            )
+
+            if not url:
+                continue
+
+            content = extract_webpage(url)
+
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                    "content": content
+                }
+            )
 
     except Exception as e:
 
-        return [
+        results.append(
             {
-                "error": f"Search failed: {str(e)}"
-            }
-        ]
-
-    sources = []
-
-    for result in search_results:
-
-        title = result.get("title", "")
-        url = result.get("href", "")
-        snippet = result.get("body", "")
-
-        if not url:
-            continue
-
-        page = extract_webpage(url)
-
-        sources.append(
-            {
-                "title": title,
-                "url": url,
-                "snippet": snippet,
-                "accessible": page.get(
-                    "success",
-                    False
-                ),
-                "domain": page.get(
-                    "domain",
-                    ""
-                ),
-                "content": (
-                    page.get("text", "")
-                    if page.get("success")
-                    else ""
-                )
+                "title": "Search Error",
+                "url": "",
+                "snippet": str(e),
+                "content": ""
             }
         )
 
-    return sources
+    return results
 
 
 # ============================================================
-# CREWAI TOOL
+# CREWAI SEARCH TOOL
 # ============================================================
 
 class ResearchSearchInput(BaseModel):
 
     query: str = Field(
         ...,
-        description="The web research query."
+        description="The web research query to search for."
     )
 
 
@@ -382,109 +382,120 @@ class ResearchSearchTool(BaseTool):
 
     name: str = "web_research_search"
 
-    description: str = (
-        "Search the live web using DDGS and read accessible "
-        "web pages. Returns original URLs and source content."
-    )
+    description: str = """
+    Search the current web for reliable information.
+
+    The tool returns search results, original URLs,
+    snippets, and extracted webpage content.
+    """
 
     args_schema: type[BaseModel] = ResearchSearchInput
 
-    def _run(self, query: str) -> str:
+    def _run(
+        self,
+        query: str
+    ) -> str:
 
-        sources = research_search(
+        results = research_search(
             query=query,
             max_results=8
         )
 
-        if not sources:
-            return "No usable sources were found."
+        if not results:
+
+            return "No web results were found."
 
         output = []
 
-        for i, source in enumerate(
-            sources,
-            1
+        for index, result in enumerate(
+            results,
+            start=1
         ):
-
-            if "error" in source:
-
-                output.append(
-                    source["error"]
-                )
-
-                continue
 
             output.append(
                 f"""
-SOURCE {i}
+SOURCE {index}
 
-TITLE:
-{source["title"]}
+Title:
+{result["title"]}
 
-ORIGINAL URL:
-{source["url"]}
+URL:
+{result["url"]}
 
-DOMAIN:
-{source["domain"]}
+Search snippet:
+{result["snippet"]}
 
-SEARCH SNIPPET:
-{source["snippet"]}
+Extracted webpage content:
+{result["content"][:10000]}
 
-SOURCE CONTENT:
-{source["content"][:8000]}
+--------------------------------------------------
 """
             )
 
         return "\n".join(output)
 
 
+# Create the search tool
 research_tool = ResearchSearchTool()
 
 
 # ============================================================
-# SINGLE CREWAI AGENT
+# ONE CREWAI AGENT
 # ============================================================
 
 research_agent = Agent(
 
-    role="Senior Evidence-Based Research Analyst",
+    role="Senior Web Research Analyst",
 
     goal="""
-    Conduct detailed, current, evidence-based research on
-    the user's research question.
-
-    Search the live web, inspect actual source pages,
-    prioritize authoritative and original sources,
-    compare evidence, identify conflicting information,
-    and produce a detailed research report.
-
-    Never invent sources, URLs, statistics, quotations,
-    facts, or evidence.
+    Conduct accurate and current web research and produce
+    a detailed evidence-based research report using reliable
+    online sources.
     """,
 
     backstory="""
-    You are a meticulous professional research analyst.
+    You are an experienced web research analyst.
 
-    You use live web research for current factual information.
+    You investigate research questions by searching the
+    current web, reading original webpages, comparing
+    information from multiple sources, identifying
+    disagreements, and separating verified facts from
+    uncertain information.
 
-    You inspect original source material whenever possible.
+    You prioritize:
 
-    You distinguish documented facts from interpretation.
+    - Government sources
+    - Official organizations
+    - Universities
+    - Research institutions
+    - Academic publications
+    - Original reports
+    - Primary sources
 
-    You cross-check important claims against multiple sources.
+    You must never invent:
 
-    When sources disagree, clearly explain the disagreement.
+    - Sources
+    - URLs
+    - Statistics
+    - Quotations
+    - Research findings
+    - Evidence
 
-    You never manufacture evidence or citations.
+    When important claims appear in multiple sources,
+    compare those sources instead of simply repeating
+    the same claim.
 
-    If reliable evidence is insufficient, explicitly say so.
+    Every important factual claim should be supported
+    by an appropriate source URL.
     """,
 
-    tools=[research_tool],
+    tools=[
+        research_tool
+    ],
 
     llm=crew_llm,
 
-    verbose=True,
+    verbose=False,
 
     allow_delegation=False
 )
@@ -497,81 +508,148 @@ research_agent = Agent(
 research_task = Task(
 
     description="""
-    Research this question:
+    Research the following topic thoroughly:
 
     {topic}
 
-    Follow these steps:
+    Follow this research process carefully.
 
-    1. Understand the research question.
+    STEP 1 — UNDERSTAND
 
-    2. Break it into useful sub-questions when necessary.
+    Understand the exact research question and identify
+    what information the user needs.
 
-    3. Perform multiple focused web searches.
+    STEP 2 — PLAN
 
-    4. Use the web_research_search tool.
+    Break the topic into important subtopics and determine
+    what evidence is required.
 
-    5. Prefer primary and authoritative sources.
+    STEP 3 — SEARCH
 
-    6. Read actual webpage content.
+    Search the current web for relevant information.
 
-    7. For current questions, prioritize recent information.
+    Use multiple searches when necessary.
 
-    8. Cross-check important factual claims.
+    STEP 4 — SOURCE SELECTION
 
-    9. Identify meaningful disagreements between sources.
+    Prioritize authoritative and primary sources.
 
-    10. Never invent facts, sources, URLs, statistics,
-        quotations, or evidence.
+    Prefer official organizations, governments,
+    universities, research institutions, academic
+    publications, and original reports.
 
-    11. Include original source URLs.
+    STEP 5 — READ SOURCES
 
-    12. Distinguish facts from interpretation.
+    Do not rely only on search-result snippets.
 
-    13. Explain important limitations.
+    Read the extracted webpage content and use the
+    actual source material.
 
-    The final report MUST contain:
+    STEP 6 — CROSS-CHECK
+
+    Compare important claims across multiple sources.
+
+    Identify:
+
+    - Agreement
+    - Disagreement
+    - Different interpretations
+    - Missing information
+    - Uncertainty
+
+    STEP 7 — ANALYSIS
+
+    Analyze the evidence carefully.
+
+    Do not present unsupported assumptions as facts.
+
+    STEP 8 — REPORT
+
+    Create a detailed professional research report.
+
+    The report must contain the following sections:
 
     # Executive Summary
 
-    # Research Question
+    Provide a detailed overview of the main findings.
+
+    # Introduction
+
+    Explain the topic, background, and why it matters.
 
     # Key Findings
 
-    # Background
+    Present the major findings and supporting evidence.
 
     # Detailed Analysis
 
-    # Evidence
+    Divide the topic into logical subsections and
+    explain each one thoroughly.
 
-    # Conflicting Information
+    # Evidence and Sources
+
+    Explain what the collected sources actually support.
+
+    # Conflicting or Different Evidence
+
+    Clearly identify disagreements or different
+    interpretations between credible sources.
 
     # Limitations
 
+    Explain important limitations, missing information,
+    uncertainty, or weaknesses in the available evidence.
+
     # Conclusion
+
+    Summarize the evidence without introducing
+    unsupported claims.
 
     # Sources
 
-    Important factual claims must be traceable to sources.
+    Provide a numbered list of the original URLs
+    used in the research.
+
+    IMPORTANT RULES:
+
+    1. Never invent a source.
+
+    2. Never invent a URL.
+
+    3. Never invent a statistic.
+
+    4. Never invent a quotation.
+
+    5. Never claim that a source supports something
+       unless the source actually supports it.
+
+    6. Prefer current information when the topic requires
+       current information.
+
+    7. Clearly distinguish factual evidence from
+       interpretation.
+
+    8. If reliable evidence is unavailable, explicitly
+       state that the evidence is limited.
+
+    9. Include original URLs.
+
+    10. Do not hide uncertainty.
     """,
 
     expected_output="""
-    A detailed professional research report containing:
+    A detailed and professionally structured research report
+    containing:
 
-    Executive Summary
-    Research Question
-    Key Findings
-    Background
-    Detailed Analysis
-    Evidence
-    Conflicting Information
-    Limitations
-    Conclusion
-    Sources
-
-    Include original URLs.
-
-    Never fabricate information.
+    - Executive Summary
+    - Introduction
+    - Key Findings
+    - Detailed Analysis
+    - Evidence and Sources
+    - Conflicting Evidence
+    - Limitations
+    - Conclusion
+    - Original Source URLs
     """,
 
     agent=research_agent
@@ -584,44 +662,49 @@ research_task = Task(
 
 research_crew = Crew(
 
-    agents=[research_agent],
+    agents=[
+        research_agent
+    ],
 
-    tasks=[research_task],
+    tasks=[
+        research_task
+    ],
 
     process=Process.sequential,
 
-    verbose=True
+    verbose=False
 )
 
 
 # ============================================================
-# INPUT SECTION
+# USER INPUT
 # ============================================================
 
-st.markdown("---")
-
-st.markdown("### 📝 What do you want to research?")
-
 st.markdown(
-    """
-    <p style="color:#94A3B8;">
-    Enter a question that requires research. ResearchAI will
-    search current web sources, inspect evidence, cross-check
-    information, and prepare a detailed report.
-    </p>
-    """,
+    '<div class="section-title">'
+    'What would you like to research?'
+    '</div>',
     unsafe_allow_html=True
 )
 
 topic = st.text_area(
-    "Research question",
+
+    "Research Topic",
+
     placeholder=(
-        "Example: What are the major applications of "
-        "artificial intelligence in education in 2026?"
+        "Example: What are the latest developments "
+        "in artificial intelligence education in 2026?"
     ),
-    height=150,
-    key="research_input"
+
+    height=140,
+
+    label_visibility="collapsed"
 )
+
+
+# ============================================================
+# START RESEARCH BUTTON
+# ============================================================
 
 research_button = st.button(
     "🔎 Start Research",
@@ -631,164 +714,316 @@ research_button = st.button(
 
 
 # ============================================================
+# RUN RESEARCH
+# ============================================================
+
+if research_button:
+
+    if not topic.strip():
+
+        st.warning(
+            "Please enter a research question or topic first."
+        )
+
+        st.stop()
+
+    st.session_state["research_topic"] = topic
+
+    with st.status(
+        "Starting research...",
+        expanded=True
+    ) as status:
+
+        # Input
+        st.write(
+            "📝 Research question received."
+        )
+
+        # Planning
+        st.write(
+            "🧠 Planning the research strategy..."
+        )
+
+        # Search
+        st.write(
+            "🔎 Searching current web sources..."
+        )
+
+        # Extraction
+        st.write(
+            "📄 Extracting information from webpages..."
+        )
+
+        # Cross-check
+        st.write(
+            "⚖️ Cross-checking evidence across sources..."
+        )
+
+        # Analysis
+        st.write(
+            "🤖 AI is analyzing the collected evidence..."
+        )
+
+        try:
+
+            result = research_crew.kickoff(
+                inputs={
+                    "topic": topic
+                }
+            )
+
+            report = str(result)
+
+            st.session_state["research_result"] = report
+
+            st.write(
+                "📊 Preparing the final research report..."
+            )
+
+            status.update(
+                label="Research completed successfully!",
+                state="complete",
+                expanded=False
+            )
+
+        except Exception as e:
+
+            status.update(
+                label="Research failed",
+                state="error",
+                expanded=True
+            )
+
+            st.error(
+                "An error occurred while running "
+                "the research agent."
+            )
+
+            st.exception(e)
+
+            st.stop()
+
+
+# ============================================================
+# DISPLAY REPORT
+# ============================================================
+
+if st.session_state["research_result"]:
+
+    st.markdown(
+        '<div class="section-title">'
+        '📊 Research Report'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    report = st.session_state[
+        "research_result"
+    ]
+
+    st.markdown(
+        '<div class="report-box">',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(report)
+
+    st.markdown(
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+
+# ============================================================
 # PDF CREATION
 # ============================================================
 
-def clean_text(text):
-
-    text = text.replace(
-        "**",
-        ""
-    )
-
-    text = text.replace(
-        "__",
-        ""
-    )
-
-    return text.strip()
-
-
-def create_pdf(report, topic):
+def create_pdf(report_text):
 
     buffer = io.BytesIO()
 
     document = SimpleDocTemplate(
+
         buffer,
+
         pagesize=A4,
-        rightMargin=0.65 * inch,
-        leftMargin=0.65 * inch,
-        topMargin=0.65 * inch,
-        bottomMargin=0.65 * inch
+
+        rightMargin=45,
+        leftMargin=45,
+        topMargin=45,
+        bottomMargin=45
     )
 
     styles = getSampleStyleSheet()
 
     title_style = ParagraphStyle(
-        "TitleCustom",
-        parent=styles["Title"],
-        fontSize=23,
-        leading=28,
-        alignment=TA_CENTER,
-        spaceAfter=10
-    )
 
-    subtitle_style = ParagraphStyle(
-        "SubtitleCustom",
-        parent=styles["Normal"],
-        fontSize=10,
-        leading=14,
+        "ResearchTitle",
+
+        parent=styles["Title"],
+
+        fontSize=22,
+
+        leading=28,
+
         alignment=TA_CENTER,
-        textColor=colors.HexColor("#64748B"),
+
         spaceAfter=20
     )
 
     heading_style = ParagraphStyle(
-        "HeadingCustom",
-        parent=styles["Heading1"],
-        fontSize=16,
+
+        "ResearchHeading",
+
+        parent=styles["Heading2"],
+
+        fontSize=15,
+
         leading=20,
-        spaceBefore=16,
-        spaceAfter=9,
-        textColor=colors.HexColor("#1E3A8A")
+
+        spaceBefore=14,
+
+        spaceAfter=8
     )
 
     body_style = ParagraphStyle(
-        "BodyCustom",
+
+        "ResearchBody",
+
         parent=styles["BodyText"],
-        fontSize=10.5,
+
+        fontSize=10,
+
         leading=16,
+
         spaceAfter=9
+    )
+
+    small_style = ParagraphStyle(
+
+        "ResearchSmall",
+
+        parent=styles["BodyText"],
+
+        fontSize=8,
+
+        leading=11,
+
+        spaceAfter=5
     )
 
     story = []
 
     story.append(
         Paragraph(
-            "ResearchAI",
+            "ResearchAI — Research Report",
             title_style
         )
     )
 
-    story.append(
-        Paragraph(
-            "Evidence-Based Research Report",
-            subtitle_style
-        )
-    )
+    lines = report_text.split("\n")
 
-    story.append(
-        Paragraph(
-            "<b>Research Question:</b> "
-            + clean_text(topic),
-            body_style
-        )
-    )
+    for line in lines:
 
-    story.append(
-        Spacer(
-            1,
-            12
-        )
-    )
-
-    for raw_line in report.splitlines():
-
-        line = raw_line.strip()
+        line = line.strip()
 
         if not line:
+
             story.append(
-                Spacer(
-                    1,
-                    5
-                )
+                Spacer(1, 6)
             )
+
             continue
 
+        # Main heading
         if line.startswith("# "):
 
-            heading = clean_text(
-                line[2:]
-            )
+            heading = line[2:].strip()
 
             story.append(
                 Paragraph(
-                    heading,
-                    heading_style
+                    escape(heading),
+                    title_style
                 )
             )
 
+        # Second-level heading
         elif line.startswith("## "):
 
-            heading = clean_text(
-                line[3:]
-            )
+            heading = line[3:].strip()
 
             story.append(
                 Paragraph(
-                    heading,
+                    escape(heading),
                     heading_style
                 )
             )
 
-        elif line.startswith("- ") or line.startswith("* "):
+        # Third-level heading
+        elif line.startswith("### "):
 
-            bullet = clean_text(
-                line[2:]
-            )
+            heading = line[4:].strip()
 
             story.append(
                 Paragraph(
-                    "• " + bullet,
-                    body_style
+                    escape(heading),
+                    heading_style
                 )
             )
 
-        else:
+        # Bullet point
+        elif (
+            line.startswith("- ")
+            or line.startswith("* ")
+        ):
+
+            bullet_text = line[2:].strip()
+
+            story.append(
+                ListFlowable(
+
+                    [
+                        ListItem(
+                            Paragraph(
+                                escape(bullet_text),
+                                body_style
+                            )
+                        )
+                    ],
+
+                    bulletType="bullet",
+
+                    leftIndent=18
+                )
+            )
+
+        # Numbered source
+        elif re.match(
+            r"^\d+\.\s+",
+            line
+        ):
+
+            source_text = re.sub(
+                r"^\d+\.\s+",
+                "",
+                line
+            )
 
             story.append(
                 Paragraph(
-                    clean_text(line),
+                    escape(source_text),
+                    small_style
+                )
+            )
+
+        # Normal paragraph
+        else:
+
+            safe_text = escape(line)
+
+            story.append(
+                Paragraph(
+                    safe_text,
                     body_style
                 )
             )
@@ -801,224 +1036,61 @@ def create_pdf(report, topic):
 
 
 # ============================================================
-# RUN RESEARCH
+# DOWNLOAD REPORT
 # ============================================================
 
-if research_button:
+if st.session_state["research_result"]:
 
-    if not topic.strip():
+    st.markdown(
+        '<div class="section-title">'
+        'Download Report'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-        st.warning(
-            "Please enter a research question."
-        )
+    col1, col2 = st.columns(2)
 
-    else:
-
-        st.session_state["research_result"] = ""
-        st.session_state["research_topic"] = topic.strip()
-
-        st.markdown("---")
-
-        st.markdown(
-            "### 🔄 Research Progress"
-        )
-
-        progress = st.progress(0)
-
-        status = st.empty()
+    # PDF
+    with col1:
 
         try:
 
-            # STEP 1
-            progress.progress(10)
-
-            status.info(
-                "📝 **Step 1/7 — Input received**\n\n"
-                "Your research question has been received."
+            pdf_data = create_pdf(
+                st.session_state["research_result"]
             )
 
-            # STEP 2
-            progress.progress(20)
+            st.download_button(
 
-            status.info(
-                "🧠 **Step 2/7 — Planning research**\n\n"
-                "The AI agent is determining what information "
-                "needs to be investigated."
+                label="📄 Download PDF",
+
+                data=pdf_data,
+
+                file_name="research_report.pdf",
+
+                mime="application/pdf",
+
+                use_container_width=True
             )
-
-            # STEP 3
-            progress.progress(30)
-
-            status.info(
-                "🌐 **Step 3/7 — Searching the live web**\n\n"
-                "The agent is searching for relevant sources."
-            )
-
-            # STEP 4
-            progress.progress(40)
-
-            status.info(
-                "📄 **Step 4/7 — Reading source pages**\n\n"
-                "Accessible webpages are being extracted and analyzed."
-            )
-
-            # ACTUAL CREWAI RESEARCH
-            with st.spinner(
-                "🤖 CrewAI agent is researching and analyzing..."
-            ):
-
-                result = research_crew.kickoff(
-                    inputs={
-                        "topic": topic.strip()
-                    }
-                )
-
-            # STEP 5
-            progress.progress(70)
-
-            status.info(
-                "🔍 **Step 5/7 — Cross-checking evidence**\n\n"
-                "The agent is comparing important claims and sources."
-            )
-
-            # STEP 6
-            progress.progress(85)
-
-            status.info(
-                "🧠 **Step 6/7 — Building the report**\n\n"
-                "The evidence is being organized into a structured report."
-            )
-
-            # STEP 7
-            progress.progress(100)
-
-            status.success(
-                "📑 **Step 7/7 — Report completed**\n\n"
-                "Your research report is ready."
-            )
-
-            st.session_state["research_result"] = str(result)
 
         except Exception as e:
 
-            progress.progress(100)
-
-            status.error(
-                f"Research failed: {str(e)}"
+            st.error(
+                f"Could not create PDF: {e}"
             )
 
-
-# ============================================================
-# DISPLAY REPORT
-# ============================================================
-
-if st.session_state.get("research_result"):
-
-    report = st.session_state["research_result"]
-
-    research_topic = st.session_state["research_topic"]
-
-    st.markdown("---")
-
-    st.markdown("## 📑 Research Report")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            "Research Engine",
-            "CrewAI"
-        )
-
+    # Text
     with col2:
-        st.metric(
-            "Web Research",
-            "Live"
+
+        st.download_button(
+
+            label="📝 Download Text",
+
+            data=st.session_state["research_result"],
+
+            file_name="research_report.txt",
+
+            mime="text/plain",
+
+            use_container_width=True
         )
-
-    with col3:
-        st.metric(
-            "Research Mode",
-            "Evidence-based"
-        )
-
-    st.markdown(
-        '<div class="report-container">',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        report
-    )
-
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-    # DOWNLOAD SECTION
-
-    st.markdown("---")
-
-    st.markdown(
-        "### 📥 Download Research"
-    )
-
-    try:
-
-        pdf_data = create_pdf(
-            report,
-            research_topic
-        )
-
-        safe_name = re.sub(
-            r"[^a-zA-Z0-9]+",
-            "_",
-            research_topic[:50]
-        ).strip("_")
-
-        if not safe_name:
-            safe_name = "research_report"
-
-        pdf_filename = (
-            safe_name
-            + "_ResearchAI.pdf"
-        )
-
-        text_filename = (
-            safe_name
-            + "_ResearchAI.txt"
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            st.download_button(
-                "📄 Download PDF",
-                data=pdf_data,
-                file_name=pdf_filename,
-                mime="application/pdf",
-                use_container_width=True
-            )
-
-        with col2:
-
-            st.download_button(
-                "📝 Download Text",
-                data=report,
-                file_name=text_filename,
-                mime="text/plain",
-                use_container_width=True
-            )
-
-    except Exception as e:
-
-        st.error(
-            f"Could not generate PDF: {str(e)}"
-        )
-
-    st.info(
-        "🔗 The report includes source URLs so that "
-        "important claims can be independently checked."
-    )
+```
