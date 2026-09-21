@@ -1,7 +1,9 @@
+````python
 import json
 import re
 from io import BytesIO
 from urllib.parse import urlparse
+from html import escape
 
 import streamlit as st
 import pandas as pd
@@ -17,10 +19,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
-    Spacer,
     Table,
     TableStyle,
-    PageBreak,
 )
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -28,7 +28,7 @@ from reportlab.lib.enums import TA_CENTER
 
 
 # ============================================================
-# PAGE
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -48,11 +48,17 @@ _original_acompletion = getattr(litellm, "acompletion", None)
 
 
 def clean_litellm_parameters(value):
+
     if isinstance(value, dict):
+
         cleaned = {}
 
         for key, item in value.items():
-            if key in {"cache_breakpoint", "cache_control"}:
+
+            if key in {
+                "cache_breakpoint",
+                "cache_control",
+            }:
                 continue
 
             cleaned[key] = clean_litellm_parameters(item)
@@ -60,24 +66,35 @@ def clean_litellm_parameters(value):
         return cleaned
 
     if isinstance(value, list):
-        return [clean_litellm_parameters(item) for item in value]
+
+        return [
+            clean_litellm_parameters(item)
+            for item in value
+        ]
 
     return value
 
 
 def safe_completion(*args, **kwargs):
+
     kwargs = clean_litellm_parameters(kwargs)
 
-    model = str(kwargs.get("model", ""))
+    model = str(
+        kwargs.get("model", "")
+    )
 
     if "gpt-oss" in model:
+
         kwargs["reasoning_effort"] = "low"
         kwargs["include_reasoning"] = False
 
-        # Keep requests small enough for the current Groq limit.
-        kwargs["max_tokens"] = 2200
+        # Keep request below current Groq TPM pressure.
+        kwargs["max_tokens"] = 1600
 
-    return _original_completion(*args, **kwargs)
+    return _original_completion(
+        *args,
+        **kwargs,
+    )
 
 
 litellm.completion = safe_completion
@@ -86,34 +103,36 @@ litellm.completion = safe_completion
 if _original_acompletion is not None:
 
     async def safe_acompletion(*args, **kwargs):
-        kwargs = clean_litellm_parameters(kwargs)
 
-        model = str(kwargs.get("model", ""))
+        kwargs = clean_litellm_parameters(
+            kwargs
+        )
+
+        model = str(
+            kwargs.get("model", "")
+        )
 
         if "gpt-oss" in model:
+
             kwargs["reasoning_effort"] = "low"
             kwargs["include_reasoning"] = False
-            kwargs["max_tokens"] = 2200
+            kwargs["max_tokens"] = 1600
 
-        return await _original_acompletion(*args, **kwargs)
+        return await _original_acompletion(
+            *args,
+            **kwargs,
+        )
 
     litellm.acompletion = safe_acompletion
 
 
 # ============================================================
 # CSS
-# IMPORTANT:
-# We use CSS only for styling.
-# NO visible HTML components are used for the interface.
 # ============================================================
 
 st.markdown(
     """
     <style>
-
-    /* =========================
-       GLOBAL
-       ========================= */
 
     .stApp {
         background: #0b1220;
@@ -129,11 +148,6 @@ st.markdown(
         padding-bottom: 4rem;
     }
 
-
-    /* =========================
-       SIDEBAR
-       ========================= */
-
     section[data-testid="stSidebar"] {
         background: #111827 !important;
         border-right: 1px solid #263244;
@@ -143,64 +157,16 @@ st.markdown(
         color: #f8fafc !important;
     }
 
-    section[data-testid="stSidebar"] .stMarkdown {
-        color: #f8fafc !important;
-    }
-
     section[data-testid="stSidebar"] hr {
         border-color: #334155 !important;
     }
 
-
-    /* =========================
-       NORMAL TEXT
-       ========================= */
-
     p,
     label,
     .stMarkdown,
-    .stText,
     .stCaption {
         color: #e5e7eb;
     }
-
-
-    /* =========================
-       TITLE
-       ========================= */
-
-    .main-title {
-        color: #ffffff;
-        font-size: 3rem;
-        font-weight: 800;
-        margin-bottom: 0.3rem;
-        letter-spacing: -1px;
-    }
-
-    .main-subtitle {
-        color: #aebbd0;
-        font-size: 1.08rem;
-        line-height: 1.7;
-        margin-bottom: 1.8rem;
-    }
-
-
-    /* =========================
-       SECTION LABELS
-       ========================= */
-
-    .section-label {
-        color: #ffffff;
-        font-size: 1.25rem;
-        font-weight: 750;
-        margin-top: 1.8rem;
-        margin-bottom: 0.7rem;
-    }
-
-
-    /* =========================
-       INPUT
-       ========================= */
 
     textarea {
         background-color: #111827 !important;
@@ -212,11 +178,6 @@ st.markdown(
     textarea::placeholder {
         color: #94a3b8 !important;
     }
-
-
-    /* =========================
-       BUTTONS
-       ========================= */
 
     button[kind="primary"] {
         background: #2563eb !important;
@@ -234,22 +195,27 @@ st.markdown(
         min-height: 42px;
     }
 
-
-    /* =========================
-       EXAMPLE BUTTONS
-       ========================= */
-
-    div[data-testid="stHorizontalBlock"] .stButton button {
-        white-space: normal !important;
-        height: auto !important;
-        min-height: 58px !important;
-        line-height: 1.35 !important;
+    .main-title {
+        color: #ffffff;
+        font-size: 3rem;
+        font-weight: 800;
+        margin-bottom: 0.3rem;
     }
 
+    .main-subtitle {
+        color: #aebbd0;
+        font-size: 1.08rem;
+        line-height: 1.7;
+        margin-bottom: 1.8rem;
+    }
 
-    /* =========================
-       REPORT PAPER
-       ========================= */
+    .section-label {
+        color: #ffffff;
+        font-size: 1.25rem;
+        font-weight: 750;
+        margin-top: 1.8rem;
+        margin-bottom: 0.7rem;
+    }
 
     .report-paper {
         background: #ffffff !important;
@@ -269,18 +235,6 @@ st.markdown(
         color: #111111 !important;
     }
 
-    .report-paper p,
-    .report-paper li,
-    .report-paper td,
-    .report-paper th {
-        color: #111111 !important;
-    }
-
-
-    /* =========================
-       REPORT TITLE
-       ========================= */
-
     .report-title {
         color: #111111 !important;
         font-size: 2.1rem;
@@ -294,11 +248,6 @@ st.markdown(
         font-size: 0.9rem;
         margin-bottom: 1.8rem;
     }
-
-
-    /* =========================
-       REPORT SECTIONS
-       ========================= */
 
     .report-heading {
         color: #111111 !important;
@@ -314,11 +263,6 @@ st.markdown(
         line-height: 1.8;
         margin-bottom: 0.8rem;
     }
-
-
-    /* =========================
-       SOURCE BOX
-       ========================= */
 
     .source-box {
         background: #f6f7f9 !important;
@@ -336,39 +280,6 @@ st.markdown(
         color: #333333 !important;
     }
 
-
-    /* =========================
-       REPORT TABLE
-       ========================= */
-
-    .report-table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 12px;
-        margin-bottom: 20px;
-    }
-
-    .report-table th {
-        background: #e9edf3 !important;
-        color: #111111 !important;
-        border: 1px solid #b8c0cc;
-        padding: 9px;
-        text-align: left;
-    }
-
-    .report-table td {
-        background: #ffffff !important;
-        color: #111111 !important;
-        border: 1px solid #cbd1da;
-        padding: 9px;
-        vertical-align: top;
-    }
-
-
-    /* =========================
-       METRICS
-       ========================= */
-
     div[data-testid="stMetric"] {
         background: #111827;
         border: 1px solid #334155;
@@ -382,15 +293,6 @@ st.markdown(
 
     div[data-testid="stMetricValue"] {
         color: #ffffff !important;
-    }
-
-
-    /* =========================
-       CODE / RAW TEXT PROTECTION
-       ========================= */
-
-    code {
-        color: #111111;
     }
 
     </style>
@@ -456,9 +358,9 @@ with st.sidebar:
     st.divider()
 
     st.caption(
-        "The agent uses the question to decide whether the "
-        "report needs findings, reasons, comparisons, "
-        "timelines, tables, or charts."
+        "The agent selects an appropriate research format "
+        "such as findings, comparisons, timelines, tables, "
+        "or charts."
     )
 
 
@@ -483,7 +385,7 @@ st.markdown(
 
 
 # ============================================================
-# EXAMPLE QUESTIONS
+# EXAMPLES
 # ============================================================
 
 st.markdown(
@@ -506,14 +408,15 @@ for i, example in enumerate(examples):
         if st.button(
             example,
             key=f"example_{i}",
-            use_container_width=True,
+            width="stretch",
         ):
+
             st.session_state.research_question = example
             st.rerun()
 
 
 # ============================================================
-# QUESTION INPUT
+# QUESTION
 # ============================================================
 
 st.markdown(
@@ -532,16 +435,15 @@ question = st.text_area(
     label_visibility="collapsed",
 )
 
-
 start = st.button(
     "🔎 Start Deep Research",
     type="primary",
-    use_container_width=True,
+    width="stretch",
 )
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# HELPERS
 # ============================================================
 
 def clean_text(text):
@@ -549,7 +451,11 @@ def clean_text(text):
     if not text:
         return ""
 
-    text = re.sub(r"\s+", " ", str(text))
+    text = re.sub(
+        r"\s+",
+        " ",
+        str(text),
+    )
 
     return text.strip()
 
@@ -561,6 +467,10 @@ def get_domain(url):
     except Exception:
         return ""
 
+
+# ============================================================
+# RESEARCH MODE
+# ============================================================
 
 def detect_research_mode(question):
 
@@ -648,10 +558,13 @@ def detect_research_mode(question):
 
 
 # ============================================================
-# TARGETED SEARCH QUERIES
+# SEARCH QUERIES
 # ============================================================
 
-def build_search_queries(question, mode):
+def build_search_queries(
+    question,
+    mode,
+):
 
     if mode == "risks":
 
@@ -716,9 +629,15 @@ def build_search_queries(question, mode):
 # WEB SEARCH
 # ============================================================
 
-def search_web(question, mode):
+def search_web(
+    question,
+    mode,
+):
 
-    queries = build_search_queries(question, mode)
+    queries = build_search_queries(
+        question,
+        mode,
+    )
 
     results = []
     seen = set()
@@ -738,7 +657,10 @@ def search_web(question, mode):
 
                     for item in found:
 
-                        url = item.get("href") or item.get("url")
+                        url = (
+                            item.get("href")
+                            or item.get("url")
+                        )
 
                         if not url:
                             continue
@@ -751,12 +673,20 @@ def search_web(question, mode):
                         results.append(
                             {
                                 "title": clean_text(
-                                    item.get("title", "Untitled")
+                                    item.get(
+                                        "title",
+                                        "Untitled",
+                                    )
                                 ),
                                 "url": url,
-                                "domain": get_domain(url),
+                                "domain": get_domain(
+                                    url
+                                ),
                                 "snippet": clean_text(
-                                    item.get("body", "")
+                                    item.get(
+                                        "body",
+                                        "",
+                                    )
                                 ),
                             }
                         )
@@ -777,21 +707,21 @@ def search_web(question, mode):
 # SOURCE SCORING
 # ============================================================
 
-def score_source(source, question):
+def score_source(
+    source,
+    question,
+):
 
     domain = source["domain"].lower()
 
     score = 0
 
-    # Government
     if domain.endswith(".gov"):
         score += 30
 
-    # Education
     if domain.endswith(".edu"):
         score += 20
 
-    # International organizations
     if any(
         name in domain
         for name in [
@@ -804,7 +734,6 @@ def score_source(source, question):
     ):
         score += 30
 
-    # Research institutions
     if any(
         name in domain
         for name in [
@@ -816,7 +745,6 @@ def score_source(source, question):
     ):
         score += 25
 
-    # Major news / reference sources
     if any(
         name in domain
         for name in [
@@ -827,11 +755,12 @@ def score_source(source, question):
     ):
         score += 15
 
-    # Search snippet quality
-    if len(source["snippet"]) >= 150:
+    if len(
+        source["snippet"]
+    ) >= 150:
+
         score += 5
 
-    # Question keywords appearing in title/snippet
     question_words = set(
         re.findall(
             r"\b[a-zA-Z]{5,}\b",
@@ -851,22 +780,35 @@ def score_source(source, question):
     )
 
     score += min(
-        len(question_words.intersection(source_words)) * 2,
+        len(
+            question_words.intersection(
+                source_words
+            )
+        ) * 2,
         15,
     )
 
     return score
 
 
-def choose_sources(results, question):
+def choose_sources(
+    results,
+    question,
+):
 
     ranked = sorted(
         results,
-        key=lambda x: score_source(x, question),
+        key=lambda x: score_source(
+            x,
+            question,
+        ),
         reverse=True,
     )
 
-    return ranked[:6]
+    # IMPORTANT:
+    # Keep only four sources to reduce
+    # the Groq request size.
+    return ranked[:4]
 
 
 # ============================================================
@@ -914,13 +856,16 @@ def read_webpage(source):
                 "noscript",
             ]
         ):
+
             tag.decompose()
 
         text = clean_text(
             soup.get_text(" ")
         )
 
-        return text[:2200]
+        # IMPORTANT:
+        # Reduced from 2200 to 1200 characters.
+        return text[:1200]
 
     except Exception:
 
@@ -928,10 +873,12 @@ def read_webpage(source):
 
 
 # ============================================================
-# BUILD COMPACT EVIDENCE
+# BUILD EVIDENCE
 # ============================================================
 
-def build_evidence(sources):
+def build_evidence(
+    sources,
+):
 
     evidence = []
 
@@ -940,7 +887,9 @@ def build_evidence(sources):
         start=1,
     ):
 
-        page_text = read_webpage(source)
+        page_text = read_webpage(
+            source
+        )
 
         evidence.append(
             f"""
@@ -956,14 +905,16 @@ URL:
 {source['url']}
 
 SEARCH SNIPPET:
-{source['snippet'][:450]}
+{source['snippet'][:350]}
 
 PAGE EVIDENCE:
-{page_text[:2200]}
+{page_text[:1200]}
 """.strip()
         )
 
-    return "\n\n".join(evidence)
+    return "\n\n".join(
+        evidence
+    )
 
 
 # ============================================================
@@ -979,7 +930,8 @@ def create_agent():
     if not api_key:
 
         raise RuntimeError(
-            "GROQ_API_KEY is missing from Streamlit Secrets."
+            "GROQ_API_KEY is missing from "
+            "Streamlit Secrets."
         )
 
     llm = LLM(
@@ -994,18 +946,18 @@ def create_agent():
         role="Senior Evidence-Based Research Analyst",
 
         goal=(
-            "Research the user's question using only the supplied "
-            "web evidence and produce a useful, accurate, structured "
-            "research report. Select the appropriate report format "
-            "based on the question."
+            "Research the user's question using the supplied "
+            "web evidence and produce an accurate, useful, "
+            "structured research report."
         ),
 
         backstory=(
-            "You are a professional research analyst. You carefully "
-            "evaluate evidence, prefer authoritative sources, distinguish "
-            "facts from interpretations, identify conflicting evidence, "
-            "and never invent facts, dates, statistics, quotations, "
-            "sources, or URLs."
+            "You are a professional research analyst. "
+            "You evaluate evidence carefully, prefer "
+            "authoritative sources, distinguish facts "
+            "from interpretations, identify conflicts, "
+            "and never invent facts, dates, statistics, "
+            "quotes, sources, or URLs."
         ),
 
         llm=llm,
@@ -1026,7 +978,9 @@ def create_agent():
 
 def extract_json(text):
 
-    text = str(text).strip()
+    text = str(
+        text
+    ).strip()
 
     text = re.sub(
         r"```json",
@@ -1042,7 +996,10 @@ def extract_json(text):
     ).strip()
 
     try:
-        return json.loads(text)
+
+        return json.loads(
+            text
+        )
 
     except Exception:
         pass
@@ -1050,18 +1007,27 @@ def extract_json(text):
     start = text.find("{")
     end = text.rfind("}")
 
-    if start != -1 and end != -1:
+    if (
+        start != -1
+        and end != -1
+    ):
 
-        candidate = text[start : end + 1]
+        candidate = text[
+            start:end + 1
+        ]
 
         try:
-            return json.loads(candidate)
+
+            return json.loads(
+                candidate
+            )
 
         except Exception:
             pass
 
     raise ValueError(
-        "The research agent did not return valid structured data."
+        "The research agent did not "
+        "return valid structured JSON."
     )
 
 
@@ -1080,13 +1046,17 @@ def run_agent(
 
     source_list = "\n".join(
         [
-            f"{i + 1}. {s['title']} — {s['url']}"
-            for i, s in enumerate(sources)
+            f"{i + 1}. "
+            f"{s['title']} — "
+            f"{s['url']}"
+            for i, s in enumerate(
+                sources
+            )
         ]
     )
 
     task_prompt = f"""
-USER RESEARCH QUESTION:
+QUESTION:
 {question}
 
 RESEARCH MODE:
@@ -1095,200 +1065,135 @@ RESEARCH MODE:
 CURRENT DATE:
 2026-09-21
 
-AVAILABLE SOURCES:
+SOURCES:
 {source_list}
 
-WEB EVIDENCE:
+EVIDENCE:
 {evidence}
 
-YOUR JOB:
+Create a professional research report.
 
-Create a complete professional research report answering the user's
-question.
+RULES:
 
-IMPORTANT:
+1. Use ONLY the supplied evidence.
 
-1. Use ONLY information supported by the supplied evidence.
+2. Never invent facts, dates,
+statistics, quotations, people,
+organizations, URLs, or claims.
 
-2. Never invent:
-   - facts
-   - dates
-   - statistics
-   - quotations
-   - people
-   - organizations
-   - URLs
-   - source claims
+3. If evidence conflicts, explain
+the conflict.
 
-3. If sources disagree, clearly explain the disagreement.
+4. Prefer authoritative sources.
 
-4. Prefer primary and authoritative sources.
+5. Do not simply summarize sources.
+Synthesize the evidence.
 
-5. Do not simply summarize the websites.
+6. Use clear professional English.
 
-6. Synthesize the evidence into a useful explanation.
+7. Do not make unsupported claims.
 
-7. Write in clear professional English.
+REPORT REQUIREMENTS:
 
-8. The report must be useful to a student or researcher.
+RISKS:
+Explain the major risks, why they
+matter, how they occur, evidence,
+and practical implications.
 
-REPORT FORMAT:
+HISTORICAL:
+Provide chronological coverage,
+dates or periods, important people
+or events, context, and a table.
+Use timeline data when supported.
 
-For a RISKS question:
+COMPARISON:
+Identify criteria, explain both
+sides, and create a comparison table.
 
-- Explain the main risks.
-- Give a separate section for each major risk.
-- Explain WHY each risk matters.
-- Explain the mechanism or reason behind the risk.
-- Include evidence where available.
-- Include practical implications.
-- Do not exaggerate.
-- Distinguish documented risks from uncertain/speculative risks.
+DATA:
+Explain trends, include available
+numbers, and create a data table
+and chart data when appropriate.
 
-For a HISTORICAL question:
+IMPACTS:
+Explain major effects and separate
+positive and negative effects when
+appropriate.
 
-- Give chronological coverage.
-- Do not skip major people/events supported by evidence.
-- Include dates or periods.
-- Explain the significance/context of each major period.
-- Create a chronological table.
-- Create timeline data when dates are available.
-
-For a COMPARISON question:
-
-- Identify the comparison criteria.
-- Explain each side.
-- Create a clear comparison table.
-- Do not declare a winner unless the evidence itself establishes a factual outcome.
-
-For a DATA question:
-
-- Explain the trend.
-- Include the available numbers.
-- Create a data table.
-- Create chart data when enough numerical data exists.
-
-For an IMPACT question:
-
-- Explain the major effects.
-- Separate positive and negative effects if appropriate.
-- Explain evidence and limitations.
-
-For GENERAL research:
-
-- Give an executive summary.
-- Give organized findings.
-- Use headings and paragraphs.
-- Add a table only if it genuinely improves understanding.
+GENERAL:
+Provide an executive summary and
+organized findings.
 
 RETURN ONLY VALID JSON.
 
-Use exactly this structure:
+Use exactly:
 
 {{
-  "title": "Professional report title",
+"title": "Report title",
 
-  "executive_summary": "A concise but informative summary.",
+"executive_summary": "Summary",
 
-  "sections": [
+"sections": [
     {{
-      "heading": "Section heading",
-      "paragraphs": [
-        "Paragraph one.",
-        "Paragraph two."
-      ]
+        "heading": "Heading",
+        "paragraphs": [
+            "Paragraph"
+        ]
     }}
-  ],
+],
 
-  "table": {{
+"table": {{
     "title": "Table title",
     "columns": ["Column 1", "Column 2"],
     "rows": [
-      ["Value", "Value"]
+        ["Value", "Value"]
     ]
-  }},
+}},
 
-  "timeline": [
-    {{
-      "name": "Person or event",
-      "start": "YYYY-MM-DD",
-      "end": "YYYY-MM-DD",
-      "era": "Era or period",
-      "description": "Short evidence-based description."
-    }}
-  ],
+"timeline": [],
 
-  "chart": {{
+"chart": {{
     "type": "none",
     "title": "",
     "x_label": "",
     "y_label": "",
     "data": []
-  }},
+}},
 
-  "sources": [
+"sources": [
     {{
-      "title": "Exact source title",
-      "url": "Exact URL supplied above",
-      "why_relevant": "Why this source supports the report."
+        "title": "Exact source title",
+        "url": "Exact URL from supplied sources",
+        "why_relevant": "Reason"
     }}
-  ]
+]
 }}
 
-CHART RULES:
+CHART TYPES:
 
-Use:
-
+Historical date-based:
 "type": "timeline"
 
-for historical date-based questions.
-
-Use:
-
+Numerical time series:
 "type": "line"
 
-for numerical time-series data.
-
-Use:
-
+Categorical numerical:
 "type": "bar"
 
-for categorical numerical comparisons.
-
-Otherwise use:
-
+Otherwise:
 "type": "none"
 
-Do NOT create a chart merely for decoration.
-
-TABLE RULES:
-
-If a table is not useful, use:
-
-{{
-  "title": "",
-  "columns": [],
-  "rows": []
-}}
-
-TIMELINE RULES:
-
-If a timeline is not appropriate, use:
-
-[]
-
-SOURCE RULE:
-
-Only use URLs that appear in the supplied source list.
-
-Do not create new URLs.
+Only use source URLs supplied above.
 """
 
     task = Task(
         description=task_prompt,
+
         expected_output=(
-            "Valid JSON containing a professional research report."
+            "Valid JSON containing a "
+            "professional research report."
         ),
+
         agent=agent,
     )
 
@@ -1301,14 +1206,18 @@ Do not create new URLs.
 
     result = crew.kickoff()
 
-    return extract_json(result)
+    return extract_json(
+        result
+    )
 
 
 # ============================================================
-# REPORT MARKDOWN
+# COPYABLE REPORT
 # ============================================================
 
-def build_copyable_report(report):
+def build_copyable_report(
+    report,
+):
 
     lines = []
 
@@ -1320,7 +1229,11 @@ def build_copyable_report(report):
     )
 
     lines.append("")
-    lines.append("EXECUTIVE SUMMARY")
+
+    lines.append(
+        "EXECUTIVE SUMMARY"
+    )
+
     lines.append("")
 
     lines.append(
@@ -1335,13 +1248,15 @@ def build_copyable_report(report):
         [],
     ):
 
-        heading = section.get(
-            "heading",
-            "",
+        lines.append("")
+
+        lines.append(
+            section.get(
+                "heading",
+                "",
+            ).upper()
         )
 
-        lines.append("")
-        lines.append(heading.upper())
         lines.append("")
 
         for paragraph in section.get(
@@ -1349,7 +1264,10 @@ def build_copyable_report(report):
             [],
         ):
 
-            lines.append(paragraph)
+            lines.append(
+                paragraph
+            )
+
             lines.append("")
 
     table = report.get(
@@ -1370,12 +1288,14 @@ def build_copyable_report(report):
     if columns and rows:
 
         lines.append("")
+
         lines.append(
             table.get(
                 "title",
                 "Summary Table",
             ).upper()
         )
+
         lines.append("")
 
         lines.append(
@@ -1400,14 +1320,18 @@ def build_copyable_report(report):
                 )
             )
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
 # PDF
 # ============================================================
 
-def create_pdf(report):
+def create_pdf(
+    report,
+):
 
     buffer = BytesIO()
 
@@ -1455,9 +1379,11 @@ def create_pdf(report):
 
     story.append(
         Paragraph(
-            report.get(
-                "title",
-                "AI Research Report",
+            escape(
+                report.get(
+                    "title",
+                    "AI Research Report",
+                )
             ),
             title_style,
         )
@@ -1472,9 +1398,11 @@ def create_pdf(report):
 
     story.append(
         Paragraph(
-            report.get(
-                "executive_summary",
-                "",
+            escape(
+                report.get(
+                    "executive_summary",
+                    "",
+                )
             ),
             body_style,
         )
@@ -1487,9 +1415,11 @@ def create_pdf(report):
 
         story.append(
             Paragraph(
-                section.get(
-                    "heading",
-                    "",
+                escape(
+                    section.get(
+                        "heading",
+                        "",
+                    )
                 ),
                 heading_style,
             )
@@ -1502,7 +1432,9 @@ def create_pdf(report):
 
             story.append(
                 Paragraph(
-                    paragraph,
+                    escape(
+                        paragraph
+                    ),
                     body_style,
                 )
             )
@@ -1526,9 +1458,11 @@ def create_pdf(report):
 
         story.append(
             Paragraph(
-                table_data.get(
-                    "title",
-                    "Summary Table",
+                escape(
+                    table_data.get(
+                        "title",
+                        "Summary Table",
+                    )
                 ),
                 heading_style,
             )
@@ -1543,7 +1477,10 @@ def create_pdf(report):
         ]
 
         pdf_table = Table(
-            [columns] + safe_rows,
+            [
+                columns
+            ]
+            + safe_rows,
             repeatRows=1,
         )
 
@@ -1593,37 +1530,17 @@ def create_pdf(report):
                         (-1, -1),
                         8,
                     ),
-                    (
-                        "LEFTPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        5,
-                    ),
-                    (
-                        "RIGHTPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        5,
-                    ),
-                    (
-                        "TOPPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        5,
-                    ),
-                    (
-                        "BOTTOMPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        5,
-                    ),
                 ]
             )
         )
 
-        story.append(pdf_table)
+        story.append(
+            pdf_table
+        )
 
-    document.build(story)
+    document.build(
+        story
+    )
 
     buffer.seek(0)
 
@@ -1634,16 +1551,16 @@ def create_pdf(report):
 # DISPLAY REPORT
 # ============================================================
 
-def display_report(report):
+def display_report(
+    report,
+):
 
     st.markdown(
-        '<div class="section-label">Research Report</div>',
+        '<div class="section-label">'
+        'Research Report'
+        '</div>',
         unsafe_allow_html=True,
     )
-
-    # --------------------------------------------------------
-    # PAPER CONTAINER
-    # --------------------------------------------------------
 
     st.markdown(
         '<div class="report-paper">',
@@ -1652,7 +1569,7 @@ def display_report(report):
 
     st.markdown(
         f'<div class="report-title">'
-        f'{report.get("title", "AI Research Report")}'
+        f'{escape(str(report.get("title", "AI Research Report")))}'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -1678,19 +1595,22 @@ def display_report(report):
         )
     )
 
-    # --------------------------------------------------------
-    # SECTIONS
-    # --------------------------------------------------------
-
     for section in report.get(
         "sections",
         [],
     ):
 
         st.markdown(
-            f'<div class="report-heading">'
-            f'{section.get("heading", "")}'
-            f'</div>',
+            '<div class="report-heading">'
+            + escape(
+                str(
+                    section.get(
+                        "heading",
+                        "",
+                    )
+                )
+            )
+            + '</div>',
             unsafe_allow_html=True,
         )
 
@@ -1730,7 +1650,9 @@ def display_report(report):
     if columns and rows:
 
         st.markdown(
-            '<div class="section-label">Data Table</div>',
+            '<div class="section-label">'
+            'Data Table'
+            '</div>',
             unsafe_allow_html=True,
         )
 
@@ -1741,7 +1663,7 @@ def display_report(report):
 
         st.dataframe(
             df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1769,10 +1691,14 @@ def display_report(report):
                             "",
                         ),
                         "Start": pd.to_datetime(
-                            item.get("start")
+                            item.get(
+                                "start"
+                            )
                         ),
                         "End": pd.to_datetime(
-                            item.get("end")
+                            item.get(
+                                "end"
+                            )
                         ),
                         "Era": item.get(
                             "era",
@@ -1813,17 +1739,11 @@ def display_report(report):
                     500,
                     len(valid_timeline) * 30,
                 ),
-                margin=dict(
-                    l=20,
-                    r=20,
-                    t=60,
-                    b=30,
-                ),
             )
 
             st.plotly_chart(
                 fig,
-                use_container_width=True,
+                width="stretch",
             )
 
     # --------------------------------------------------------
@@ -1907,10 +1827,11 @@ def display_report(report):
 
                 st.plotly_chart(
                     fig,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         except Exception:
+
             pass
 
     # --------------------------------------------------------
@@ -1953,7 +1874,9 @@ def display_report(report):
             )
 
             if why:
-                st.caption(why)
+                st.caption(
+                    why
+                )
 
             if url:
                 st.markdown(
@@ -1963,7 +1886,7 @@ def display_report(report):
             st.divider()
 
     # --------------------------------------------------------
-    # COPY / DOWNLOAD
+    # EXPORT
     # --------------------------------------------------------
 
     copyable = build_copyable_report(
@@ -1990,7 +1913,7 @@ def display_report(report):
             data=copyable,
             file_name="ai_research_report.txt",
             mime="text/plain",
-            use_container_width=True,
+            width="stretch",
         )
 
     with export_cols[1]:
@@ -2000,7 +1923,7 @@ def display_report(report):
             data=pdf_bytes,
             file_name="ai_research_report.pdf",
             mime="application/pdf",
-            use_container_width=True,
+            width="stretch",
         )
 
     with export_cols[2]:
@@ -2010,7 +1933,7 @@ def display_report(report):
             data=copyable,
             file_name="copyable_research_report.txt",
             mime="text/plain",
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -2034,14 +1957,12 @@ if start:
 
     try:
 
-        # ----------------------------------------------------
-        # STEP 1
-        # ----------------------------------------------------
-
         with st.status(
             "Researching your question...",
             expanded=True,
         ) as status:
+
+            # STEP 1
 
             st.write(
                 "Understanding the research question..."
@@ -2057,9 +1978,7 @@ if start:
                 f"Research strategy: **{mode.title()}**"
             )
 
-            # ------------------------------------------------
             # STEP 2
-            # ------------------------------------------------
 
             st.write(
                 "Searching the live web..."
@@ -2080,9 +1999,7 @@ if start:
                 f"Found {len(results)} candidate sources."
             )
 
-            # ------------------------------------------------
             # STEP 3
-            # ------------------------------------------------
 
             st.write(
                 "Selecting relevant and authoritative sources..."
@@ -2093,15 +2010,19 @@ if start:
                 question,
             )
 
+            if not sources:
+
+                raise RuntimeError(
+                    "No suitable sources were selected."
+                )
+
             st.session_state.sources = sources
 
             st.write(
                 f"Selected {len(sources)} sources."
             )
 
-            # ------------------------------------------------
             # STEP 4
-            # ------------------------------------------------
 
             st.write(
                 "Reading original source pages..."
@@ -2111,9 +2032,13 @@ if start:
                 sources
             )
 
-            # ------------------------------------------------
+            if not evidence.strip():
+
+                raise RuntimeError(
+                    "No readable evidence was extracted."
+                )
+
             # STEP 5
-            # ------------------------------------------------
 
             st.write(
                 "One CrewAI research agent is analyzing the evidence..."
@@ -2126,6 +2051,12 @@ if start:
                 sources,
             )
 
+            if not report:
+
+                raise RuntimeError(
+                    "The research agent returned an empty report."
+                )
+
             st.session_state.report = report
 
             status.update(
@@ -2136,20 +2067,32 @@ if start:
 
     except Exception as e:
 
+        # ====================================================
+        # IMPORTANT:
+        # Show the COMPLETE error directly in Streamlit.
+        # ====================================================
+
+        import traceback
+
         st.error(
-            f"Research failed: {e}"
+            "❌ Research failed"
         )
 
-        st.info(
-            "Open Manage app → Logs in Streamlit Cloud "
-            "if you need the detailed error."
+        st.code(
+            traceback.format_exc(),
+            language="text",
+        )
+
+        st.warning(
+            "The full technical error above is shown "
+            "so the exact failing component can be identified."
         )
 
         st.stop()
 
 
 # ============================================================
-# SHOW RESULT
+# SHOW REPORT
 # ============================================================
 
 if st.session_state.report:
@@ -2157,3 +2100,4 @@ if st.session_state.report:
     display_report(
         st.session_state.report
     )
+````
