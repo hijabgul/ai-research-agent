@@ -1,4 +1,4 @@
-````python
+
 import json
 import re
 from io import BytesIO
@@ -2100,4 +2100,4 @@ if st.session_state.report:
     display_report(
         st.session_state.report
     )
-````
+
