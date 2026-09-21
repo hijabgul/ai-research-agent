@@ -1,4 +1,3 @@
-
 import io
 import re
 import requests
@@ -22,6 +21,79 @@ from reportlab.platypus import (
     ListItem
 )
 from xml.sax.saxutils import escape
+
+
+# ============================================================
+# GROQ / LITELLM COMPATIBILITY FIX
+# ============================================================
+#
+# CrewAI can add "cache_breakpoint" to messages.
+# Groq rejects that field.
+#
+# We remove it before LiteLLM sends the request to Groq.
+# Groq handles prompt caching automatically.
+# ============================================================
+
+import litellm
+
+
+_original_completion = litellm.completion
+_original_acompletion = getattr(litellm, "acompletion", None)
+
+
+def _remove_cache_breakpoints(value):
+    """
+    Recursively remove cache_breakpoint from dictionaries/lists.
+    """
+
+    if isinstance(value, dict):
+
+        cleaned = {}
+
+        for key, item in value.items():
+
+            if key == "cache_breakpoint":
+                continue
+
+            cleaned[key] = _remove_cache_breakpoints(item)
+
+        return cleaned
+
+    if isinstance(value, list):
+
+        return [
+            _remove_cache_breakpoints(item)
+            for item in value
+        ]
+
+    return value
+
+
+def _safe_completion(*args, **kwargs):
+
+    cleaned_kwargs = _remove_cache_breakpoints(kwargs)
+
+    return _original_completion(
+        *args,
+        **cleaned_kwargs
+    )
+
+
+litellm.completion = _safe_completion
+
+
+if _original_acompletion is not None:
+
+    async def _safe_acompletion(*args, **kwargs):
+
+        cleaned_kwargs = _remove_cache_breakpoints(kwargs)
+
+        return await _original_acompletion(
+            *args,
+            **cleaned_kwargs
+        )
+
+    litellm.acompletion = _safe_acompletion
 
 
 # ============================================================
@@ -106,7 +178,6 @@ st.markdown(
         margin-bottom: 15px;
     }
 
-    /* Research input */
     textarea {
         background-color: #0F172A !important;
         color: #F8FAFC !important;
@@ -119,7 +190,6 @@ st.markdown(
         color: #64748B !important;
     }
 
-    /* Report */
     .report-box {
         background-color: #111827;
         border: 1px solid #1E293B;
@@ -217,17 +287,30 @@ except Exception:
 
 
 # ============================================================
-# GROQ + CREWAI MODEL CONFIGURATION
+# GROQ MODEL CONFIGURATION
+# ============================================================
+#
+# Groq exposes an OpenAI-compatible endpoint.
+#
+# Actual Groq model:
+# openai/gpt-oss-120b
+#
+# LiteLLM provider:
+# openai
+#
+# Groq endpoint:
+# https://api.groq.com/openai/v1
 # ============================================================
 
-# Groq-hosted model
-GROQ_MODEL = "groq/openai/gpt-oss-120b"
+GROQ_MODEL = "openai/openai/gpt-oss-120b"
+
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
-# CrewAI LLM
 crew_llm = LLM(
     model=GROQ_MODEL,
     api_key=groq_api_key,
+    api_base=GROQ_BASE_URL,
     temperature=0.2
 )
 
@@ -262,7 +345,6 @@ def extract_webpage(url):
             "lxml"
         )
 
-        # Remove unnecessary page elements
         for element in soup(
             [
                 "script",
@@ -281,20 +363,18 @@ def extract_webpage(url):
             strip=True
         )
 
-        # Remove excessive spaces
         text = re.sub(
             r"\s+",
             " ",
             text
         )
 
-        # Limit webpage size
         return text[:15000]
 
     except Exception as e:
 
         return (
-            f"Unable to extract webpage content. "
+            "Unable to extract webpage content. "
             f"Error: {str(e)}"
         )
 
@@ -385,7 +465,7 @@ class ResearchSearchTool(BaseTool):
     description: str = """
     Search the current web for reliable information.
 
-    The tool returns search results, original URLs,
+    Returns search results, original URLs,
     snippets, and extracted webpage content.
     """
 
@@ -435,7 +515,6 @@ Extracted webpage content:
         return "\n".join(output)
 
 
-# Create the search tool
 research_tool = ResearchSearchTool()
 
 
@@ -462,7 +541,7 @@ research_agent = Agent(
     disagreements, and separating verified facts from
     uncertain information.
 
-    You prioritize:
+    Prioritize:
 
     - Government sources
     - Official organizations
@@ -472,7 +551,7 @@ research_agent = Agent(
     - Original reports
     - Primary sources
 
-    You must never invent:
+    Never invent:
 
     - Sources
     - URLs
@@ -512,17 +591,15 @@ research_task = Task(
 
     {topic}
 
-    Follow this research process carefully.
+    Follow this process.
 
     STEP 1 — UNDERSTAND
 
-    Understand the exact research question and identify
-    what information the user needs.
+    Understand the exact research question.
 
     STEP 2 — PLAN
 
-    Break the topic into important subtopics and determine
-    what evidence is required.
+    Break the topic into important subtopics.
 
     STEP 3 — SEARCH
 
@@ -565,17 +642,17 @@ research_task = Task(
 
     STEP 8 — REPORT
 
-    Create a detailed professional research report.
+    Create a detailed professional report.
 
-    The report must contain the following sections:
+    The report must contain:
 
     # Executive Summary
 
-    Provide a detailed overview of the main findings.
+    Give a detailed overview of the main findings.
 
     # Introduction
 
-    Explain the topic, background, and why it matters.
+    Explain the topic and why it matters.
 
     # Key Findings
 
@@ -734,32 +811,26 @@ if research_button:
         expanded=True
     ) as status:
 
-        # Input
         st.write(
             "📝 Research question received."
         )
 
-        # Planning
         st.write(
             "🧠 Planning the research strategy..."
         )
 
-        # Search
         st.write(
             "🔎 Searching current web sources..."
         )
 
-        # Extraction
         st.write(
             "📄 Extracting information from webpages..."
         )
 
-        # Cross-check
         st.write(
             "⚖️ Cross-checking evidence across sources..."
         )
 
-        # Analysis
         st.write(
             "🤖 AI is analyzing the collected evidence..."
         )
@@ -935,7 +1006,6 @@ def create_pdf(report_text):
 
             continue
 
-        # Main heading
         if line.startswith("# "):
 
             heading = line[2:].strip()
@@ -947,7 +1017,6 @@ def create_pdf(report_text):
                 )
             )
 
-        # Second-level heading
         elif line.startswith("## "):
 
             heading = line[3:].strip()
@@ -959,7 +1028,6 @@ def create_pdf(report_text):
                 )
             )
 
-        # Third-level heading
         elif line.startswith("### "):
 
             heading = line[4:].strip()
@@ -971,7 +1039,6 @@ def create_pdf(report_text):
                 )
             )
 
-        # Bullet point
         elif (
             line.startswith("- ")
             or line.startswith("* ")
@@ -997,7 +1064,6 @@ def create_pdf(report_text):
                 )
             )
 
-        # Numbered source
         elif re.match(
             r"^\d+\.\s+",
             line
@@ -1016,7 +1082,6 @@ def create_pdf(report_text):
                 )
             )
 
-        # Normal paragraph
         else:
 
             safe_text = escape(line)
@@ -1050,7 +1115,6 @@ if st.session_state["research_result"]:
 
     col1, col2 = st.columns(2)
 
-    # PDF
     with col1:
 
         try:
@@ -1078,7 +1142,6 @@ if st.session_state["research_result"]:
                 f"Could not create PDF: {e}"
             )
 
-    # Text
     with col2:
 
         st.download_button(
