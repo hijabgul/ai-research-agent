@@ -1,102 +1,29 @@
+import json
 import re
 import html
 from io import BytesIO
 from urllib.parse import urlparse
 
 import streamlit as st
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
+import plotly.express as px
 
 import litellm
 from crewai import Agent, Task, Crew, Process, LLM
 
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+)
+from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
-
-
-# ============================================================
-# GROQ / LITELLM SAFETY PATCH
-# ============================================================
-
-_original_completion = litellm.completion
-_original_acompletion = getattr(litellm, "acompletion", None)
-
-
-def remove_unsupported_parameters(value):
-    """
-    Recursively removes parameters that Groq does not accept.
-    """
-    if isinstance(value, dict):
-        cleaned = {}
-
-        for key, item in value.items():
-            if key in {
-                "cache_breakpoint",
-                "cache_control",
-            }:
-                continue
-
-            cleaned[key] = remove_unsupported_parameters(item)
-
-        return cleaned
-
-    if isinstance(value, list):
-        return [
-            remove_unsupported_parameters(item)
-            for item in value
-        ]
-
-    return value
-
-
-def safe_completion(*args, **kwargs):
-    """
-    Keeps the Groq request small enough for the user's
-    current token-per-minute limit.
-    """
-
-    kwargs = remove_unsupported_parameters(kwargs)
-
-    model = str(kwargs.get("model", ""))
-
-    if "gpt-oss" in model:
-
-        # GPT-OSS supports low reasoning.
-        kwargs["reasoning_effort"] = "low"
-
-        # Do not allow CrewAI/LiteLLM to request a huge completion.
-        kwargs["max_tokens"] = 1200
-
-        # GPT-OSS can return reasoning separately.
-        kwargs["include_reasoning"] = False
-
-    return _original_completion(*args, **kwargs)
-
-
-litellm.completion = safe_completion
-
-
-if _original_acompletion is not None:
-
-    async def safe_acompletion(*args, **kwargs):
-
-        kwargs = remove_unsupported_parameters(kwargs)
-
-        model = str(kwargs.get("model", ""))
-
-        if "gpt-oss" in model:
-            kwargs["reasoning_effort"] = "low"
-            kwargs["max_tokens"] = 1200
-            kwargs["include_reasoning"] = False
-
-        return await _original_acompletion(
-            *args,
-            **kwargs
-        )
-
-    litellm.acompletion = safe_acompletion
 
 
 # ============================================================
@@ -112,6 +39,88 @@ st.set_page_config(
 
 
 # ============================================================
+# LITELLM SAFETY PATCH
+# ============================================================
+
+_original_completion = litellm.completion
+_original_acompletion = getattr(litellm, "acompletion", None)
+
+
+def clean_litellm_parameters(value):
+
+    if isinstance(value, dict):
+
+        result = {}
+
+        for key, item in value.items():
+
+            if key in {
+                "cache_breakpoint",
+                "cache_control",
+            }:
+                continue
+
+            result[key] = clean_litellm_parameters(item)
+
+        return result
+
+    if isinstance(value, list):
+
+        return [
+            clean_litellm_parameters(item)
+            for item in value
+        ]
+
+    return value
+
+
+def safe_completion(*args, **kwargs):
+
+    kwargs = clean_litellm_parameters(kwargs)
+
+    model = str(kwargs.get("model", ""))
+
+    if "gpt-oss" in model:
+
+        kwargs["reasoning_effort"] = "low"
+        kwargs["include_reasoning"] = False
+
+        # Keep the request under the current
+        # organization token limit.
+        kwargs["max_tokens"] = 1800
+
+    return _original_completion(
+        *args,
+        **kwargs
+    )
+
+
+litellm.completion = safe_completion
+
+
+if _original_acompletion is not None:
+
+    async def safe_acompletion(*args, **kwargs):
+
+        kwargs = clean_litellm_parameters(kwargs)
+
+        model = str(kwargs.get("model", ""))
+
+        if "gpt-oss" in model:
+
+            kwargs["reasoning_effort"] = "low"
+            kwargs["include_reasoning"] = False
+            kwargs["max_tokens"] = 1800
+
+        return await _original_acompletion(
+            *args,
+            **kwargs
+        )
+
+    litellm.acompletion = safe_acompletion
+
+
+# ============================================================
 # CSS
 # ============================================================
 
@@ -119,232 +128,104 @@ st.markdown(
     """
     <style>
 
-    /* ---------- GLOBAL ---------- */
-
     .stApp {
-        background:
-            radial-gradient(
-                circle at top right,
-                rgba(37, 99, 235, 0.10),
-                transparent 30%
-            ),
-            #07111f;
-        color: #e5edf8;
+        background: #07111f;
     }
 
     .main {
         padding-top: 1rem;
     }
 
-    h1, h2, h3 {
-        color: #f8fafc !important;
+    [data-testid="stSidebar"] {
+        background: #081321;
     }
-
-    p, label, span {
-        color: #cbd5e1;
-    }
-
-
-    /* ---------- HERO ---------- */
 
     .hero {
-        padding: 28px;
-        border-radius: 22px;
-        margin-bottom: 24px;
-
-        background:
-            linear-gradient(
-                135deg,
-                rgba(15, 35, 64, 0.98),
-                rgba(9, 24, 45, 0.98)
-            );
-
-        border: 1px solid rgba(96, 165, 250, 0.20);
-
-        box-shadow:
-            0 20px 50px rgba(0,0,0,0.25);
+        padding: 34px;
+        border-radius: 20px;
+        background: linear-gradient(
+            135deg,
+            #10233d,
+            #0b1728
+        );
+        border: 1px solid #1e3a5f;
+        margin-bottom: 25px;
     }
 
-    .hero-title {
-        font-size: 42px;
-        font-weight: 800;
+    .hero h1 {
         color: #f8fafc;
+        font-size: 42px;
         margin-bottom: 8px;
     }
 
-    .hero-subtitle {
-        font-size: 17px;
+    .hero p {
         color: #94a3b8;
+        font-size: 17px;
         line-height: 1.6;
     }
 
-    .badge {
-        display: inline-block;
-        padding: 6px 12px;
-        border-radius: 999px;
-        margin-right: 7px;
-        margin-top: 12px;
-
-        background: rgba(37,99,235,0.14);
-        border: 1px solid rgba(96,165,250,0.20);
-
-        color: #93c5fd;
-        font-size: 13px;
-        font-weight: 600;
-    }
-
-
-    /* ---------- WORKFLOW ---------- */
-
-    .workflow-card {
-        background: rgba(15, 31, 52, 0.90);
-        border: 1px solid rgba(148,163,184,0.13);
-
-        border-radius: 16px;
-        padding: 18px;
-        text-align: center;
-
-        min-height: 125px;
-    }
-
-    .workflow-number {
-        font-size: 25px;
-        font-weight: 800;
-        color: #60a5fa;
-    }
-
-    .workflow-title {
-        font-weight: 700;
-        margin-top: 5px;
+    .section-title {
         color: #f8fafc;
-    }
-
-    .workflow-text {
-        font-size: 12px;
-        color: #94a3b8;
-        margin-top: 5px;
-    }
-
-
-    /* ---------- INPUT ---------- */
-
-    .input-title {
-        font-size: 21px;
-        font-weight: 700;
-        margin-bottom: 8px;
-    }
-
-
-    /* ---------- REPORT ---------- */
-
-    .report-header {
-        margin-top: 30px;
-        margin-bottom: 12px;
         font-size: 25px;
-        font-weight: 800;
+        font-weight: 750;
+        margin-top: 25px;
+        margin-bottom: 12px;
     }
 
-    .report-box {
-        background: #0b1728;
-        border: 1px solid rgba(96,165,250,0.18);
-        border-radius: 18px;
-        padding: 26px;
-        line-height: 1.75;
+    .small-text {
+        color: #94a3b8;
     }
-
-
-    /* ---------- SOURCES ---------- */
 
     .source-card {
-        background: #0b1728;
-        border: 1px solid rgba(148,163,184,0.13);
+        padding: 18px;
         border-radius: 14px;
-        padding: 17px;
+        background: #0c1a2c;
+        border: 1px solid #1c304a;
         margin-bottom: 12px;
     }
 
     .source-title {
+        color: #e2e8f0;
         font-size: 16px;
         font-weight: 700;
-        color: #e2e8f0;
     }
 
     .source-domain {
-        font-size: 12px;
         color: #60a5fa;
+        font-size: 13px;
         margin-top: 5px;
     }
 
     .source-url {
+        color: #64748b;
         font-size: 12px;
-        color: #94a3b8;
+        margin-top: 6px;
         word-break: break-all;
-        margin-top: 7px;
     }
 
-
-    /* ---------- BUTTONS ---------- */
-
-    .stButton > button {
-        border-radius: 10px;
-        min-height: 42px;
-
-        border: 1px solid rgba(96,165,250,0.25);
-
-        background: #10233d;
-        color: #dbeafe;
-
-        font-weight: 600;
-    }
-
-    .stButton > button:hover {
-        border-color: #60a5fa;
-        background: #15304f;
-        color: white;
-    }
-
-
-    /* ---------- SIDEBAR ---------- */
-
-    section[data-testid="stSidebar"] {
-        background: #07111f;
-        border-right: 1px solid rgba(148,163,184,0.12);
-    }
-
-    .sidebar-title {
-        font-size: 22px;
-        font-weight: 800;
-        color: #f8fafc;
-    }
-
-    .sidebar-item {
-        background: #0d1b2e;
-        border-radius: 12px;
-        padding: 12px;
-        margin: 8px 0;
-        border: 1px solid rgba(148,163,184,0.10);
-    }
-
-    .sidebar-label {
-        color: #94a3b8;
-        font-size: 12px;
-    }
-
-    .sidebar-value {
-        color: #e2e8f0;
-        font-weight: 700;
-        margin-top: 3px;
-    }
-
-
-    /* ---------- STATUS ---------- */
-
-    .status-box {
-        background: rgba(15,31,52,0.85);
-        border: 1px solid rgba(96,165,250,0.15);
-        padding: 15px;
+    .info-card {
+        padding: 18px;
         border-radius: 14px;
-        margin-top: 15px;
+        background: #0c1a2c;
+        border: 1px solid #1c304a;
+        min-height: 105px;
+    }
+
+    .info-number {
+        color: #60a5fa;
+        font-size: 25px;
+        font-weight: 800;
+    }
+
+    .info-title {
+        color: #f8fafc;
+        font-weight: 700;
+    }
+
+    .info-text {
+        color: #94a3b8;
+        font-size: 13px;
+        margin-top: 5px;
     }
 
     </style>
@@ -357,17 +238,17 @@ st.markdown(
 # SESSION STATE
 # ============================================================
 
-if "research_input" not in st.session_state:
-    st.session_state.research_input = ""
+if "research_question" not in st.session_state:
+    st.session_state.research_question = ""
 
-if "last_report" not in st.session_state:
-    st.session_state.last_report = ""
+if "result" not in st.session_state:
+    st.session_state.result = None
 
-if "last_sources" not in st.session_state:
-    st.session_state.last_sources = []
+if "sources" not in st.session_state:
+    st.session_state.sources = []
 
-if "last_topic" not in st.session_state:
-    st.session_state.last_topic = ""
+if "topic" not in st.session_state:
+    st.session_state.topic = ""
 
 
 # ============================================================
@@ -376,43 +257,37 @@ if "last_topic" not in st.session_state:
 
 with st.sidebar:
 
-    st.markdown(
-        '<div class="sidebar-title">🔎 AI Research Agent</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown("---")
-
-    st.markdown(
-        """
-        <div class="sidebar-item">
-            <div class="sidebar-label">ARCHITECTURE</div>
-            <div class="sidebar-value">1 CrewAI Agent</div>
-        </div>
-
-        <div class="sidebar-item">
-            <div class="sidebar-label">WEB RESEARCH</div>
-            <div class="sidebar-value">DuckDuckGo + Web Pages</div>
-        </div>
-
-        <div class="sidebar-item">
-            <div class="sidebar-label">LLM</div>
-            <div class="sidebar-value">Groq GPT-OSS 20B</div>
-        </div>
-
-        <div class="sidebar-item">
-            <div class="sidebar-label">REASONING</div>
-            <div class="sidebar-value">Low / Token Safe</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown("---")
+    st.title("🔎 Research Agent")
 
     st.caption(
-        "The agent searches the live web, extracts evidence, "
-        "cross-checks sources, and generates a cited research report."
+        "AI-powered structured web research"
+    )
+
+    st.divider()
+
+    st.subheader("Architecture")
+
+    st.write("🤖 One CrewAI Agent")
+    st.write("🌐 Live Web Research")
+    st.write("📚 Evidence Extraction")
+    st.write("📊 Automatic Charts")
+    st.write("📋 Automatic Tables")
+    st.write("🔗 Source Citations")
+
+    st.divider()
+
+    st.subheader("AI Model")
+
+    st.write("Groq")
+    st.write("GPT-OSS 20B")
+    st.write("Low reasoning mode")
+
+    st.divider()
+
+    st.caption(
+        "The agent does not rely on a fixed answer. "
+        "It researches the question and builds the "
+        "appropriate report structure."
     )
 
 
@@ -424,26 +299,17 @@ st.markdown(
     """
     <div class="hero">
 
-        <div class="hero-title">
-            🔎 AI Research Agent
-        </div>
+        <h1>🔎 AI Research Agent</h1>
 
-        <div class="hero-subtitle">
-            Research current topics using live web sources,
-            evidence extraction, source verification, and
-            a single CrewAI research agent.
-        </div>
-
-        <div>
-            <span class="badge">ONE CREWAI AGENT</span>
-            <span class="badge">LIVE WEB</span>
-            <span class="badge">GROQ</span>
-            <span class="badge">SOURCE CITATIONS</span>
-        </div>
+        <p>
+        Ask a research question and receive a structured,
+        source-based report with timelines, tables,
+        charts, key findings, and original sources.
+        </p>
 
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 
@@ -451,179 +317,181 @@ st.markdown(
 # WORKFLOW
 # ============================================================
 
-st.subheader("How it works")
+cols = st.columns(5)
 
-workflow = st.columns(5)
-
-steps = [
-    ("01", "Question", "Enter a research topic"),
-    ("02", "Search", "Find current web sources"),
-    ("03", "Extract", "Read source evidence"),
-    ("04", "Analyze", "CrewAI research agent"),
-    ("05", "Report", "Cited research result"),
+workflow = [
+    ("01", "Question", "Understand the research request"),
+    ("02", "Search", "Find current sources"),
+    ("03", "Evidence", "Read original pages"),
+    ("04", "Analyze", "One CrewAI agent"),
+    ("05", "Report", "Table + chart + findings"),
 ]
 
-for col, step in zip(workflow, steps):
+for col, item in zip(cols, workflow):
 
     with col:
 
         st.markdown(
             f"""
-            <div class="workflow-card">
+            <div class="info-card">
 
-                <div class="workflow-number">
-                    {step[0]}
+                <div class="info-number">
+                    {item[0]}
                 </div>
 
-                <div class="workflow-title">
-                    {step[1]}
+                <div class="info-title">
+                    {item[1]}
                 </div>
 
-                <div class="workflow-text">
-                    {step[2]}
+                <div class="info-text">
+                    {item[2]}
                 </div>
 
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
 
-st.markdown("<br>", unsafe_allow_html=True)
-
-
 # ============================================================
-# EXAMPLE QUESTIONS
+# EXAMPLES
 # ============================================================
 
 st.markdown(
-    '<div class="input-title">💡 Example Research Questions</div>',
-    unsafe_allow_html=True
+    '<div class="section-title">Try an example</div>',
+    unsafe_allow_html=True,
 )
 
-example_columns = st.columns(3)
-
 examples = [
-    "What are the latest AI trends in 2026?",
-    "What is the impact of AI on education?",
-    "What are the latest developments in renewable energy?",
+    "Tell me about the Prime Ministers of Pakistan from 1947 until now.",
+    "Explain the history of artificial intelligence from its beginning until now.",
+    "What are the major developments in renewable energy from 2000 to 2026?",
 ]
+
+example_cols = st.columns(3)
 
 for i, example in enumerate(examples):
 
-    with example_columns[i]:
+    with example_cols[i]:
 
         if st.button(
             example,
             key=f"example_{i}",
-            use_container_width=True
+            use_container_width=True,
         ):
 
-            st.session_state.research_input = example
+            st.session_state.research_question = example
             st.rerun()
 
 
 # ============================================================
-# USER INPUT
+# INPUT
 # ============================================================
 
-st.markdown("<br>", unsafe_allow_html=True)
-
 st.markdown(
-    '<div class="input-title">📝 Research Question</div>',
-    unsafe_allow_html=True
+    '<div class="section-title">Research Question</div>',
+    unsafe_allow_html=True,
 )
 
-topic = st.text_area(
-    "Research topic",
-    key="research_input",
-    height=130,
+question = st.text_area(
+    "Research Question",
+    key="research_question",
+    height=140,
     placeholder=(
-        "Example: What are the latest developments "
-        "in artificial intelligence in 2026?"
+        "Example: Tell me about the Prime Ministers "
+        "of Pakistan from 1947 until now."
     ),
     label_visibility="collapsed",
 )
 
 
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
+start = st.button(
+    "🔎 Start Deep Research",
+    type="primary",
+    use_container_width=True,
+)
 
-MAX_RESULTS_PER_QUERY = 2
-MAX_SELECTED_SOURCES = 3
-MAX_PAGE_TEXT = 500
-REQUEST_TIMEOUT = 10
 
+# ============================================================
+# UTILITY FUNCTIONS
+# ============================================================
 
 def clean_text(text):
-    """
-    Cleans whitespace and removes excessive characters.
-    """
 
     if not text:
         return ""
 
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"\s+",
+        " ",
+        str(text),
+    )
+
     return text.strip()
 
 
 def get_domain(url):
+
     try:
         return urlparse(url).netloc.lower()
     except Exception:
         return ""
 
 
-def search_web(query):
-    """
-    Search current web using DDGS.
-    """
-
-    results = []
+def search_web(topic):
 
     queries = [
-        f"{query} 2026",
-        f"{query} latest research evidence",
-        f"{query} official report",
+        f"{topic} 2026",
+        f"{topic} official source",
+        f"{topic} history timeline evidence",
     ]
 
-    seen_urls = set()
+    results = []
+    seen = set()
 
     try:
 
         with DDGS() as ddgs:
 
-            for search_query in queries:
+            for query in queries:
 
                 try:
 
                     found = ddgs.text(
-                        search_query,
-                        max_results=MAX_RESULTS_PER_QUERY
+                        query,
+                        max_results=3,
                     )
 
                     for item in found:
 
-                        url = item.get("href") or item.get("url")
+                        url = (
+                            item.get("href")
+                            or item.get("url")
+                        )
 
                         if not url:
                             continue
 
-                        if url in seen_urls:
+                        if url in seen:
                             continue
 
-                        seen_urls.add(url)
+                        seen.add(url)
 
                         results.append(
                             {
                                 "title": clean_text(
-                                    item.get("title", "Untitled source")
+                                    item.get(
+                                        "title",
+                                        "Untitled",
+                                    )
                                 ),
                                 "url": url,
                                 "domain": get_domain(url),
                                 "snippet": clean_text(
-                                    item.get("body", "")
+                                    item.get(
+                                        "body",
+                                        "",
+                                    )
                                 ),
                             }
                         )
@@ -634,78 +502,80 @@ def search_web(query):
     except Exception as e:
 
         raise RuntimeError(
-            f"Web search could not start: {str(e)}"
+            f"Search failed: {e}"
         )
 
     return results
 
 
-def source_score(source):
-    """
-    Gives priority to authoritative domains.
-    """
+def score_source(source):
 
-    domain = source.get("domain", "")
+    domain = source["domain"]
 
     score = 0
 
     if domain.endswith(".gov"):
-        score += 10
+        score += 20
 
     if domain.endswith(".edu"):
-        score += 8
+        score += 15
 
     if domain.endswith(".org"):
-        score += 5
+        score += 8
 
-    trusted_domains = [
+    important_domains = [
+        "na.gov.pk",
+        "pmo.gov.pk",
+        "un.org",
         "who.int",
         "worldbank.org",
-        "un.org",
         "oecd.org",
         "nih.gov",
+        "nasa.gov",
         "nature.com",
-        "sciencedirect.com",
         "reuters.com",
         "bbc.com",
-        "nasa.gov",
-        "europa.eu",
     ]
 
-    for trusted in trusted_domains:
+    for domain_name in important_domains:
 
-        if trusted in domain:
-            score += 10
+        if domain_name in domain:
+            score += 25
 
-    if len(source.get("snippet", "")) > 100:
-        score += 2
+    if len(source["snippet"]) > 100:
+        score += 3
 
     return score
 
 
-def extract_page(source):
-    """
-    Reads the actual webpage.
-    """
+def choose_sources(results):
 
-    url = source["url"]
+    ranked = sorted(
+        results,
+        key=score_source,
+        reverse=True,
+    )
+
+    return ranked[:5]
+
+
+def read_webpage(source):
 
     headers = {
-        "User-Agent": (
+        "User-Agent":
             "Mozilla/5.0 "
             "(Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 "
             "(KHTML, like Gecko) "
             "Chrome/131.0 Safari/537.36"
-        )
     }
 
     try:
 
         response = requests.get(
-            url,
+            source["url"],
             headers=headers,
-            timeout=REQUEST_TIMEOUT
+            timeout=12,
         )
 
         if response.status_code != 200:
@@ -713,7 +583,7 @@ def extract_page(source):
 
         soup = BeautifulSoup(
             response.text,
-            "lxml"
+            "lxml",
         )
 
         for tag in soup(
@@ -730,108 +600,101 @@ def extract_page(source):
                 "noscript",
             ]
         ):
+
             tag.decompose()
 
         text = clean_text(
             soup.get_text(" ")
         )
 
-        if len(text) > MAX_PAGE_TEXT:
-            text = text[:MAX_PAGE_TEXT]
-
-        return text or source["snippet"]
+        return text[:3000]
 
     except Exception:
+
         return source["snippet"]
 
 
-def select_sources(results):
-    """
-    Selects the strongest sources.
-    """
+def build_evidence(sources):
 
-    ranked = sorted(
-        results,
-        key=source_score,
-        reverse=True
-    )
+    evidence_parts = []
 
-    selected = []
-
-    for item in ranked:
-
-        if len(selected) >= MAX_SELECTED_SOURCES:
-            break
-
-        selected.append(item)
-
-    return selected
-
-
-def build_evidence(selected_sources):
-    """
-    Creates a very compact evidence package.
-    Keeping this small is important because the
-    current Groq organization has an 8K TPM limit.
-    """
-
-    evidence = []
-
-    for number, source in enumerate(
-        selected_sources,
-        start=1
+    for index, source in enumerate(
+        sources,
+        start=1,
     ):
 
-        page_text = extract_page(source)
+        page = read_webpage(source)
 
-        evidence.append(
+        evidence_parts.append(
             f"""
-SOURCE {number}
-Title: {source['title']}
-Domain: {source['domain']}
-URL: {source['url']}
+SOURCE {index}
 
-Evidence:
-{page_text[:MAX_PAGE_TEXT]}
+Title:
+{source['title']}
+
+Domain:
+{source['domain']}
+
+URL:
+{source['url']}
+
+Search snippet:
+{source['snippet'][:600]}
+
+Page evidence:
+{page[:3000]}
 """.strip()
         )
 
-    return "\n\n".join(evidence)
+    return "\n\n".join(
+        evidence_parts
+    )
 
+
+# ============================================================
+# CREWAI AGENT
+# ============================================================
 
 def create_agent():
-    """
-    Creates exactly ONE CrewAI agent.
-    """
 
-    groq_key = st.secrets.get("GROQ_API_KEY")
+    api_key = st.secrets.get(
+        "GROQ_API_KEY"
+    )
 
-    if not groq_key:
+    if not api_key:
+
         raise RuntimeError(
-            "GROQ_API_KEY was not found in Streamlit Secrets."
+            "GROQ_API_KEY is missing from Streamlit Secrets."
         )
 
     llm = LLM(
         model="groq/openai/gpt-oss-20b",
-        api_key=groq_key,
+        api_key=api_key,
         api_base="https://api.groq.com/openai/v1",
-        temperature=0.3,
+        temperature=0.4,
     )
 
     agent = Agent(
-        role="Senior Web Research Analyst",
+
+        role="Senior Research Analyst",
 
         goal=(
-            "Analyze the supplied web evidence and create "
-            "an accurate research report. Never invent "
-            "facts, statistics, quotations, sources, or URLs."
+            "Conduct evidence-based research and "
+            "produce structured, useful reports. "
+            "Determine what format best answers the "
+            "question, including timelines, tables, "
+            "charts, comparisons, historical eras, "
+            "statistics, or other appropriate structures."
         ),
 
         backstory=(
-            "You are a careful research analyst. "
-            "You rely only on the evidence supplied to you. "
-            "When evidence is uncertain or conflicting, "
-            "clearly say so."
+            "You are a professional research analyst "
+            "who studies supplied web evidence carefully. "
+            "You organize information chronologically "
+            "when the question is historical, compare "
+            "entities when comparison is requested, "
+            "extract data when statistics are requested, "
+            "and never invent facts or sources."
         ),
 
         llm=llm,
@@ -846,52 +709,173 @@ def create_agent():
     return agent
 
 
-def run_research(topic, evidence):
-    """
-    Runs ONE CrewAI agent with ONE task.
-    """
+# ============================================================
+# JSON PARSER
+# ============================================================
+
+def extract_json(text):
+
+    text = str(text).strip()
+
+    # Remove markdown code fences.
+    text = re.sub(
+        r"```json",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"```",
+        "",
+        text,
+    )
+
+    text = text.strip()
+
+    # Direct JSON.
+    try:
+
+        return json.loads(text)
+
+    except Exception:
+        pass
+
+    # Find JSON object.
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start != -1 and end != -1:
+
+        candidate = text[
+            start:end + 1
+        ]
+
+        try:
+
+            return json.loads(candidate)
+
+        except Exception:
+            pass
+
+    raise ValueError(
+        "The research agent did not return valid structured data."
+    )
+
+
+# ============================================================
+# RUN AGENT
+# ============================================================
+
+def run_agent(question, evidence):
 
     agent = create_agent()
 
-    task_description = f"""
-Research question:
+    task_prompt = f"""
+You are answering this research question:
 
-{topic}
+{question}
 
-Use ONLY the evidence supplied below.
+You have been given web evidence below.
 
-IMPORTANT RULES:
+Your job is to create a STRUCTURED research report.
 
-1. Do not invent facts.
-2. Do not invent statistics.
-3. Do not invent quotations.
-4. Do not invent sources.
-5. Do not create URLs that were not supplied.
-6. If the evidence is insufficient, say so.
-7. Distinguish facts from uncertainty.
-8. Mention conflicting evidence when present.
-9. Keep the answer useful and factual.
-10. Cite sources using their supplied URLs.
+IMPORTANT:
 
-Write a concise but useful report using these sections:
+- Use only the supplied evidence.
+- Do not invent facts.
+- Do not invent dates.
+- Do not invent statistics.
+- Do not invent quotations.
+- Do not invent URLs.
+- Prefer primary/official sources.
+- If sources disagree, mention the disagreement.
+- If evidence is missing, explicitly say that it is missing.
+- Do not make political recommendations or rankings.
+- For historical questions, organize the answer chronologically.
+- For people/office-holder history, include each relevant term.
+- For timeline questions, create timeline data.
+- For numerical/time-series questions, create chart data.
+- For comparison questions, create a comparison table.
+- The output must be useful, not a generic essay.
 
-## Executive Summary
+CURRENT DATE:
+2026-09-21
 
-## Key Findings
+RETURN ONLY VALID JSON.
 
-## Evidence Analysis
+Use EXACTLY this structure:
 
-## Important Facts
+{{
+  "title": "Report title",
+  "executive_summary": "Short but informative summary",
 
-## Uncertainty or Conflicting Evidence
+  "sections": [
+    {{
+      "heading": "Section heading",
+      "content": "Detailed factual content"
+    }}
+  ],
 
-## Practical Implications
+  "table": {{
+    "title": "Table title",
+    "columns": ["Column 1", "Column 2"],
+    "rows": [
+      ["Value", "Value"]
+    ]
+  }},
 
-## Conclusion
+  "timeline": [
+    {{
+      "name": "Person/event",
+      "start": "YYYY-MM-DD",
+      "end": "YYYY-MM-DD",
+      "era": "Historical era or period",
+      "description": "Short factual description"
+    }}
+  ],
 
-## Sources
+  "chart": {{
+    "type": "timeline",
+    "title": "Chart title",
+    "x_label": "Time",
+    "y_label": "Person/event",
+    "data": [
+      {{
+        "name": "Person/event",
+        "start": "YYYY-MM-DD",
+        "end": "YYYY-MM-DD"
+      }}
+    ]
+  }},
 
-The report should be approximately 600-900 words.
+  "sources": [
+    {{
+      "title": "Exact source title",
+      "url": "Exact URL",
+      "why_relevant": "Why this source was used"
+    }}
+  ]
+}}
+
+FORMAT RULES:
+
+For a historical timeline question:
+
+- Fill the timeline completely.
+- Include all relevant people/events supported by the evidence.
+- Put terms in chronological order.
+- Include the historical era.
+- Create a table containing the chronological list.
+- Create a timeline chart.
+- Do not collapse multiple terms of the same person into one term when the source treats them as separate terms.
+
+For ordinary research questions:
+
+- Use only the structures that make sense.
+- An empty timeline is acceptable.
+- An empty table is acceptable.
+- An empty chart is acceptable.
 
 WEB EVIDENCE:
 
@@ -899,12 +883,12 @@ WEB EVIDENCE:
 """
 
     task = Task(
-        description=task_description,
+        description=task_prompt,
 
         expected_output=(
-            "A factual research report based only on "
-            "the supplied web evidence, including "
-            "the supplied source URLs."
+            "Valid JSON containing a structured "
+            "research report, table, timeline, "
+            "chart data, and source list."
         ),
 
         agent=agent,
@@ -919,23 +903,26 @@ WEB EVIDENCE:
 
     result = crew.kickoff()
 
-    return str(result)
+    return extract_json(
+        result
+    )
 
 
-def create_pdf(topic, report, sources):
-    """
-    Creates a downloadable PDF.
-    """
+# ============================================================
+# PDF
+# ============================================================
+
+def make_pdf(result):
 
     buffer = BytesIO()
 
-    document = SimpleDocTemplate(
+    doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        rightMargin=45,
-        leftMargin=45,
-        topMargin=45,
-        bottomMargin=45,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=40,
+        bottomMargin=40,
     )
 
     styles = getSampleStyleSheet()
@@ -944,87 +931,157 @@ def create_pdf(topic, report, sources):
 
     story.append(
         Paragraph(
-            "AI Research Agent Report",
-            styles["Title"]
+            html.escape(
+                result.get(
+                    "title",
+                    "Research Report",
+                )
+            ),
+            styles["Title"],
         )
     )
 
     story.append(
-        Spacer(1, 12)
+        Spacer(1, 15)
     )
 
     story.append(
         Paragraph(
-            f"<b>Research Question:</b> "
-            f"{html.escape(topic)}",
-            styles["Normal"]
+            "<b>Executive Summary</b>",
+            styles["Heading2"],
         )
-    )
-
-    story.append(
-        Spacer(1, 20)
-    )
-
-    for paragraph in report.split("\n"):
-
-        paragraph = paragraph.strip()
-
-        if not paragraph:
-            story.append(Spacer(1, 8))
-            continue
-
-        safe = html.escape(paragraph)
-
-        if safe.startswith("## "):
-
-            story.append(
-                Paragraph(
-                    safe.replace("## ", ""),
-                    styles["Heading2"]
-                )
-            )
-
-        else:
-
-            story.append(
-                Paragraph(
-                    safe,
-                    styles["BodyText"]
-                )
-            )
-
-    story.append(
-        Spacer(1, 20)
     )
 
     story.append(
         Paragraph(
-            "Verified Web Sources",
-            styles["Heading2"]
+            html.escape(
+                result.get(
+                    "executive_summary",
+                    "",
+                )
+            ),
+            styles["BodyText"],
         )
     )
 
-    for source in sources:
+    for section in result.get(
+        "sections",
+        [],
+    ):
+
+        story.append(
+            Spacer(1, 12)
+        )
 
         story.append(
             Paragraph(
-                html.escape(source["title"]),
-                styles["BodyText"]
+                html.escape(
+                    section.get(
+                        "heading",
+                        "",
+                    )
+                ),
+                styles["Heading2"],
             )
         )
 
         story.append(
             Paragraph(
-                html.escape(source["url"]),
-                styles["BodyText"]
+                html.escape(
+                    section.get(
+                        "content",
+                        "",
+                    )
+                ),
+                styles["BodyText"],
+            )
+        )
+
+    table_data = result.get(
+        "table",
+        {},
+    )
+
+    columns = table_data.get(
+        "columns",
+        [],
+    )
+
+    rows = table_data.get(
+        "rows",
+        [],
+    )
+
+    if columns and rows:
+
+        story.append(
+            Spacer(1, 15)
+        )
+
+        story.append(
+            Paragraph(
+                html.escape(
+                    table_data.get(
+                        "title",
+                        "Data",
+                    )
+                ),
+                styles["Heading2"],
+            )
+        )
+
+        safe_rows = [
+            [
+                str(cell)
+                for cell in row
+            ]
+            for row in rows
+        ]
+
+        pdf_table = Table(
+            [columns] + safe_rows,
+            repeatRows=1,
+        )
+
+        pdf_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor(
+                            "#17365D"
+                        ),
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white,
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.grey,
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "TOP",
+                    ),
+                ]
             )
         )
 
         story.append(
-            Spacer(1, 8)
+            pdf_table
         )
 
-    document.build(story)
+    doc.build(story)
 
     buffer.seek(0)
 
@@ -1032,70 +1089,65 @@ def create_pdf(topic, report, sources):
 
 
 # ============================================================
-# START RESEARCH
+# RESEARCH EXECUTION
 # ============================================================
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-start = st.button(
-    "🔎 Start Research",
-    type="primary",
-    use_container_width=True,
-)
-
 
 if start:
 
-    if not topic.strip():
+    if not question.strip():
 
         st.warning(
-            "Please enter a research question first."
+            "Please enter a research question."
         )
 
         st.stop()
 
-    st.session_state.last_report = ""
-    st.session_state.last_sources = []
-    st.session_state.last_topic = topic
-
-    # --------------------------------------------------------
-    # STEP 1
-    # --------------------------------------------------------
+    st.session_state.result = None
+    st.session_state.sources = []
+    st.session_state.topic = question
 
     with st.status(
-        "🔎 Researching your topic...",
-        expanded=True
+        "🔎 Deep research in progress...",
+        expanded=True,
     ) as status:
 
+        # ----------------------------------------------
+        # SEARCH
+        # ----------------------------------------------
+
         st.write(
-            "🌐 Searching the live web..."
+            "🌐 Searching current web sources..."
         )
 
         try:
 
-            results = search_web(topic)
+            results = search_web(
+                question
+            )
 
         except Exception as e:
 
             status.update(
-                label="❌ Web search failed",
-                state="error"
+                label="Search failed",
+                state="error",
             )
 
-            st.error(str(e))
+            st.error(
+                str(e)
+            )
 
             st.stop()
 
         if not results:
 
             status.update(
-                label="❌ No web sources found",
-                state="error"
+                label="No sources found",
+                state="error",
             )
 
             st.error(
                 "No web sources were found. "
-                "Try a more specific research question."
+                "Try a more specific question."
             )
 
             st.stop()
@@ -1104,218 +1156,528 @@ if start:
             f"✓ Found {len(results)} web results"
         )
 
-        # ----------------------------------------------------
-        # STEP 2
-        # ----------------------------------------------------
+        # ----------------------------------------------
+        # SOURCE SELECTION
+        # ----------------------------------------------
 
         st.write(
-            "📚 Selecting relevant sources..."
+            "📚 Selecting authoritative sources..."
         )
 
-        selected_sources = select_sources(
+        selected = choose_sources(
             results
         )
 
         st.write(
-            f"✓ Selected {len(selected_sources)} sources"
+            f"✓ Selected {len(selected)} sources"
         )
 
-        # ----------------------------------------------------
-        # STEP 3
-        # ----------------------------------------------------
+        # ----------------------------------------------
+        # WEB EXTRACTION
+        # ----------------------------------------------
 
         st.write(
-            "📄 Reading source pages..."
+            "📄 Reading original source pages..."
         )
 
         evidence = build_evidence(
-            selected_sources
+            selected
         )
 
         st.write(
-            "✓ Evidence extracted"
+            "✓ Source evidence collected"
         )
 
-        # ----------------------------------------------------
-        # STEP 4
-        # ----------------------------------------------------
+        # ----------------------------------------------
+        # AGENT
+        # ----------------------------------------------
 
         st.write(
-            "🤖 Running the single CrewAI research agent..."
+            "🤖 One CrewAI research agent is "
+            "organizing the evidence..."
         )
 
         try:
 
-            report = run_research(
-                topic,
-                evidence
+            result = run_agent(
+                question,
+                evidence,
             )
 
         except Exception as e:
 
-            error_text = str(e)
+            error = str(e)
 
             status.update(
-                label="❌ AI analysis failed",
-                state="error"
+                label="Agent failed",
+                state="error",
             )
 
             st.error(
-                "The web research completed, but the AI "
-                "analysis request was rejected."
+                "The web research worked, but the "
+                "CrewAI analysis failed."
             )
 
-            if "413" in error_text or "rate_limit" in error_text:
+            if (
+                "413" in error
+                or "rate_limit" in error.lower()
+                or "tokens per minute" in error.lower()
+            ):
 
                 st.warning(
-                    "Groq rejected the request because of "
-                    "the current token-per-minute limit. "
-                    "This version already minimizes the "
-                    "request, so wait a few seconds and "
-                    "try again."
+                    "Groq rejected the request because "
+                    "of the current token limit. "
+                    "Wait a few seconds and try again."
                 )
 
             with st.expander(
                 "Technical error"
             ):
-                st.code(error_text)
 
-            st.session_state.last_sources = selected_sources
+                st.code(error)
+
+            st.session_state.sources = selected
 
             st.stop()
 
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
-
         status.update(
             label="✅ Research completed",
-            state="complete"
+            state="complete",
         )
 
-    st.session_state.last_report = report
-    st.session_state.last_sources = selected_sources
+    st.session_state.result = result
+    st.session_state.sources = selected
 
 
 # ============================================================
-# DISPLAY REPORT
+# DISPLAY RESULT
 # ============================================================
 
-if st.session_state.last_report:
+result = st.session_state.result
 
-    st.markdown(
-        '<div class="report-header">📊 Research Report</div>',
-        unsafe_allow_html=True
+
+if result:
+
+    st.divider()
+
+    st.title(
+        result.get(
+            "title",
+            "Research Report",
+        )
     )
 
-    st.markdown(
-        '<div class="report-box">',
-        unsafe_allow_html=True
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    st.subheader(
+        "Executive Summary"
     )
 
-    st.markdown(
-        st.session_state.last_report
+    st.info(
+        result.get(
+            "executive_summary",
+            "",
+        )
     )
 
-    st.markdown(
-        '</div>',
-        unsafe_allow_html=True
+    # ========================================================
+    # REPORT
+    # ========================================================
+
+    sections = result.get(
+        "sections",
+        [],
     )
 
+    if sections:
 
-# ============================================================
-# DISPLAY SOURCES
-# ============================================================
+        st.subheader(
+            "Research Findings"
+        )
 
-if st.session_state.last_sources:
+        for section in sections:
 
-    st.markdown(
-        '<div class="report-header">🔗 Verified Web Sources</div>',
-        unsafe_allow_html=True
+            with st.container(
+                border=True
+            ):
+
+                st.markdown(
+                    f"### {section.get('heading', '')}"
+                )
+
+                st.write(
+                    section.get(
+                        "content",
+                        "",
+                    )
+                )
+
+    # ========================================================
+    # CHART
+    # ========================================================
+
+    chart = result.get(
+        "chart",
+        {},
     )
 
-    for source in st.session_state.last_sources:
+    chart_data = chart.get(
+        "data",
+        [],
+    )
 
-        title = html.escape(
-            source.get("title", "Untitled")
+    if chart_data:
+
+        st.subheader(
+            "📊 Visual Overview"
         )
 
-        domain = html.escape(
-            source.get("domain", "")
+        chart_type = chart.get(
+            "type",
+            "",
+        ).lower()
+
+        if chart_type == "timeline":
+
+            df = pd.DataFrame(
+                chart_data
+            )
+
+            if {
+                "name",
+                "start",
+                "end",
+            }.issubset(df.columns):
+
+                df["start"] = pd.to_datetime(
+                    df["start"],
+                    errors="coerce",
+                )
+
+                df["end"] = pd.to_datetime(
+                    df["end"],
+                    errors="coerce",
+                )
+
+                df = df.dropna(
+                    subset=[
+                        "start",
+                        "end",
+                    ]
+                )
+
+                if not df.empty:
+
+                    fig = px.timeline(
+                        df,
+                        x_start="start",
+                        x_end="end",
+                        y="name",
+                        title=chart.get(
+                            "title",
+                            "Timeline",
+                        ),
+                    )
+
+                    fig.update_yaxes(
+                        autorange="reversed"
+                    )
+
+                    fig.update_layout(
+                        template="plotly_dark",
+                        height=max(
+                            500,
+                            len(df) * 28,
+                        ),
+                        margin=dict(
+                            l=20,
+                            r=20,
+                            t=60,
+                            b=20,
+                        ),
+                    )
+
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                    )
+
+        elif chart_type == "line":
+
+            df = pd.DataFrame(
+                chart_data
+            )
+
+            x = chart.get(
+                "x",
+                "x",
+            )
+
+            y = chart.get(
+                "y",
+                "y",
+            )
+
+            if x in df.columns and y in df.columns:
+
+                fig = px.line(
+                    df,
+                    x=x,
+                    y=y,
+                    title=chart.get(
+                        "title",
+                        "Trend",
+                    ),
+                    markers=True,
+                )
+
+                fig.update_layout(
+                    template="plotly_dark"
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                )
+
+        elif chart_type == "bar":
+
+            df = pd.DataFrame(
+                chart_data
+            )
+
+            x = chart.get(
+                "x",
+                "x",
+            )
+
+            y = chart.get(
+                "y",
+                "y",
+            )
+
+            if x in df.columns and y in df.columns:
+
+                fig = px.bar(
+                    df,
+                    x=x,
+                    y=y,
+                    title=chart.get(
+                        "title",
+                        "Comparison",
+                    ),
+                )
+
+                fig.update_layout(
+                    template="plotly_dark"
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                )
+
+    # ========================================================
+    # TABLE
+    # ========================================================
+
+    table = result.get(
+        "table",
+        {},
+    )
+
+    columns = table.get(
+        "columns",
+        [],
+    )
+
+    rows = table.get(
+        "rows",
+        [],
+    )
+
+    if columns and rows:
+
+        st.subheader(
+            f"📋 {table.get('title', 'Research Data')}"
         )
 
-        url = html.escape(
-            source.get("url", "")
+        dataframe = pd.DataFrame(
+            rows,
+            columns=columns,
         )
 
-        snippet = html.escape(
-            source.get("snippet", "")
+        st.dataframe(
+            dataframe,
+            use_container_width=True,
+            hide_index=True,
         )
 
-        st.markdown(
-            f"""
-            <div class="source-card">
+    # ========================================================
+    # TIMELINE
+    # ========================================================
 
-                <div class="source-title">
-                    {title}
-                </div>
+    timeline = result.get(
+        "timeline",
+        [],
+    )
 
-                <div class="source-domain">
-                    {domain}
-                </div>
+    if timeline:
 
-                <div class="source-url">
-                    {url}
-                </div>
-
-                <div style="
-                    margin-top:10px;
-                    color:#94a3b8;
-                    font-size:13px;
-                    line-height:1.5;
-                ">
-                    {snippet}
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
+        st.subheader(
+            "🕒 Detailed Timeline"
         )
 
+        timeline_df = pd.DataFrame(
+            timeline
+        )
 
-# ============================================================
-# DOWNLOADS
-# ============================================================
+        st.dataframe(
+            timeline_df,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-if st.session_state.last_report:
+    # ========================================================
+    # SOURCES
+    # ========================================================
 
-    st.markdown(
-        '<div class="report-header">⬇️ Download Report</div>',
-        unsafe_allow_html=True
+    st.subheader(
+        "🔗 Sources"
+    )
+
+    agent_sources = result.get(
+        "sources",
+        [],
+    )
+
+    if agent_sources:
+
+        for source in agent_sources:
+
+            title = html.escape(
+                str(
+                    source.get(
+                        "title",
+                        "Source",
+                    )
+                )
+            )
+
+            url = source.get(
+                "url",
+                "",
+            )
+
+            why = html.escape(
+                str(
+                    source.get(
+                        "why_relevant",
+                        "",
+                    )
+                )
+            )
+
+            st.markdown(
+                f"**{title}**"
+            )
+
+            if url:
+
+                st.markdown(
+                    f"[Open original source]({url})"
+                )
+
+            if why:
+
+                st.caption(
+                    why
+                )
+
+            st.divider()
+
+    # ========================================================
+    # DOWNLOAD
+    # ========================================================
+
+    st.subheader(
+        "⬇️ Download"
+    )
+
+    text_report = []
+
+    text_report.append(
+        result.get(
+            "title",
+            "Research Report",
+        )
+    )
+
+    text_report.append("")
+
+    text_report.append(
+        "EXECUTIVE SUMMARY"
+    )
+
+    text_report.append(
+        result.get(
+            "executive_summary",
+            "",
+        )
+    )
+
+    for section in sections:
+
+        text_report.append("")
+        text_report.append(
+            section.get(
+                "heading",
+                "",
+            )
+        )
+        text_report.append(
+            section.get(
+                "content",
+                "",
+            )
+        )
+
+    if columns and rows:
+
+        text_report.append("")
+        text_report.append(
+            table.get(
+                "title",
+                "Data",
+            )
+        )
+
+        text_report.append(
+            " | ".join(columns)
+        )
+
+        for row in rows:
+
+            text_report.append(
+                " | ".join(
+                    str(x)
+                    for x in row
+                )
+            )
+
+    final_text = "\n".join(
+        text_report
     )
 
     col1, col2 = st.columns(2)
-
-    report_text = (
-        f"AI RESEARCH AGENT\n\n"
-        f"Research Question:\n"
-        f"{st.session_state.last_topic}\n\n"
-        f"{st.session_state.last_report}\n\n"
-        f"VERIFIED SOURCES\n\n"
-    )
-
-    for source in st.session_state.last_sources:
-
-        report_text += (
-            f"{source['title']}\n"
-            f"{source['url']}\n\n"
-        )
 
     with col1:
 
         st.download_button(
             "📄 Download TXT",
-            data=report_text,
+            data=final_text,
             file_name="research_report.txt",
             mime="text/plain",
             use_container_width=True,
@@ -1325,10 +1687,8 @@ if st.session_state.last_report:
 
         try:
 
-            pdf = create_pdf(
-                st.session_state.last_topic,
-                st.session_state.last_report,
-                st.session_state.last_sources,
+            pdf = make_pdf(
+                result
             )
 
             st.download_button(
@@ -1342,31 +1702,5 @@ if st.session_state.last_report:
         except Exception as e:
 
             st.warning(
-                f"PDF generation unavailable: {e}"
+                f"PDF could not be created: {e}"
             )
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.markdown(
-    """
-    <br><br>
-
-    <div style="
-        text-align:center;
-        color:#64748b;
-        padding:20px;
-        border-top:1px solid rgba(148,163,184,0.10);
-    ">
-
-        AI Research Agent ·
-        One CrewAI Agent ·
-        Live Web Research ·
-        Groq
-
-    </div>
-    """,
-    unsafe_allow_html=True
-)
