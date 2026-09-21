@@ -9,3 +9,5 @@ pydantic
 groq
 python-dotenv
 reportlab
+plotly
+pandas
