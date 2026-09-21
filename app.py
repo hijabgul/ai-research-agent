@@ -1,4 +1,4 @@
-```python
+python
 import io
 import re
 import requests
