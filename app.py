@@ -33,8 +33,6 @@ from reportlab.platypus import (
 # ============================================================
 # 1. LITELLM SAFETY PATCH
 # ============================================================
-# Some CrewAI/LiteLLM versions may send cache_breakpoint to
-# Groq. Groq rejects this parameter, so remove it safely.
 
 _original_completion = litellm.completion
 _original_acompletion = getattr(litellm, "acompletion", None)
@@ -76,7 +74,7 @@ if _original_acompletion is not None:
 
 
 # ============================================================
-# 2. STREAMLIT PAGE CONFIG
+# 2. PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -88,14 +86,13 @@ st.set_page_config(
 
 
 # ============================================================
-# 3. CUSTOM CSS
+# 3. CSS
 # ============================================================
 
 st.markdown(
     """
     <style>
 
-    /* Main background */
     .stApp {
         background:
             radial-gradient(
@@ -107,14 +104,12 @@ st.markdown(
         color: #e5e7eb;
     }
 
-    /* Main container */
     .block-container {
         max-width: 1200px;
         padding-top: 2rem;
         padding-bottom: 3rem;
     }
 
-    /* Header */
     .hero {
         padding: 30px 10px 20px 10px;
         text-align: center;
@@ -141,7 +136,6 @@ st.markdown(
         line-height: 1.6;
     }
 
-    /* Workflow cards */
     .workflow-container {
         display: grid;
         grid-template-columns: repeat(6, 1fr);
@@ -178,7 +172,6 @@ st.markdown(
         font-weight: 600;
     }
 
-    /* Section titles */
     .section-title {
         font-size: 21px;
         font-weight: 700;
@@ -187,7 +180,6 @@ st.markdown(
         margin-bottom: 12px;
     }
 
-    /* Source card */
     .source-card {
         background: rgba(15, 23, 42, 0.82);
         border: 1px solid rgba(96, 165, 250, 0.18);
@@ -215,7 +207,6 @@ st.markdown(
         margin-top: 5px;
     }
 
-    /* Report box */
     .report-box {
         background: rgba(15, 23, 42, 0.82);
         border: 1px solid rgba(96, 165, 250, 0.18);
@@ -224,7 +215,6 @@ st.markdown(
         line-height: 1.75;
     }
 
-    /* Small badge */
     .badge {
         display: inline-block;
         padding: 5px 10px;
@@ -236,33 +226,32 @@ st.markdown(
         border: 1px solid rgba(96, 165, 250, 0.18);
     }
 
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background: #07101d;
         border-right: 1px solid rgba(148, 163, 184, 0.10);
     }
 
-    /* Text area */
     textarea {
         background-color: #0f1b2d !important;
         color: #f8fafc !important;
         border: 1px solid #243b5a !important;
     }
 
-    /* Buttons */
     .stButton > button {
         border-radius: 9px;
         font-weight: 700;
     }
 
-    /* Responsive workflow */
     @media (max-width: 900px) {
+
         .workflow-container {
             grid-template-columns: repeat(3, 1fr);
         }
+
     }
 
     @media (max-width: 600px) {
+
         .workflow-container {
             grid-template-columns: repeat(2, 1fr);
         }
@@ -270,6 +259,7 @@ st.markdown(
         .hero-title {
             font-size: 31px;
         }
+
     }
 
     </style>
@@ -371,9 +361,10 @@ with st.sidebar:
 
     st.write(
         """
-        The application searches the current web first,
-        reads selected source pages, and then sends a
-        compact evidence package to one CrewAI research agent.
+        The application searches the current web,
+        reads selected source pages, compares the evidence,
+        and sends a compact evidence package to one
+        CrewAI research agent.
         """
     )
 
@@ -387,7 +378,7 @@ with st.sidebar:
         • Preserve original URLs  
         • Compare multiple sources  
         • Do not invent evidence  
-        • Clearly identify uncertainty
+        • Identify uncertainty
         """
     )
 
@@ -426,54 +417,74 @@ except Exception:
 
 
 # ============================================================
-# 8. MODEL CONFIGURATION
+# 8. GROQ MODEL
 # ============================================================
 
 GROQ_MODEL = "openai/gpt-oss-120b"
+
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+
+# ============================================================
+# IMPORTANT TOKEN SETTINGS
+# ============================================================
+#
+# Your current Groq organization has an 8K TPM limit.
+#
+# Therefore:
+#
+# 1. We keep webpage evidence very small.
+# 2. We keep the task prompt short.
+# 3. We tell the model to use LOW reasoning.
+# 4. We allow only ONE agent iteration.
+#
+# ============================================================
 
 
 crew_llm = LLM(
     model=GROQ_MODEL,
     api_key=groq_api_key,
     api_base=GROQ_BASE_URL,
-    temperature=0.15,
+    temperature=0.2,
+    max_tokens=1800,
+    reasoning_effort="low",
 )
 
 
 # ============================================================
-# 9. SEARCH CONFIGURATION
+# 9. SEARCH SETTINGS
 # ============================================================
 
 MAX_SEARCH_RESULTS_PER_QUERY = 3
-MAX_FINAL_SOURCES = 5
 
-# IMPORTANT:
-# Keep this small because the user's current Groq limit is
-# 8K TPM. We deliberately send a compact evidence package.
-MAX_SOURCE_TEXT = 850
+MAX_FINAL_SOURCES = 4
 
-REQUEST_TIMEOUT = 12
+MAX_SOURCE_TEXT = 600
+
+REQUEST_TIMEOUT = 10
 
 
 # ============================================================
-# 10. URL / DOMAIN HELPERS
+# 10. URL HELPERS
 # ============================================================
 
 def get_domain(url):
-    """Return a clean domain name."""
 
     try:
+
         domain = urlparse(url).netloc.lower()
-        domain = domain.replace("www.", "")
-        return domain
+
+        return domain.replace(
+            "www.",
+            ""
+        )
 
     except Exception:
+
         return url
 
 
 def normalize_url(url):
-    """Remove tracking parameters from URLs where possible."""
 
     try:
 
@@ -495,12 +506,6 @@ def normalize_url(url):
 # ============================================================
 
 def extract_webpage(url):
-    """
-    Download a webpage and extract readable text.
-
-    The extracted text is intentionally limited so that
-    the final LLM request stays below the user's Groq TPM limit.
-    """
 
     headers = {
         "User-Agent": (
@@ -521,17 +526,7 @@ def extract_webpage(url):
         )
 
         if response.status_code != 200:
-            return ""
 
-        content_type = response.headers.get(
-            "content-type",
-            ""
-        ).lower()
-
-        if (
-            "text/html" not in content_type
-            and "application/xhtml" not in content_type
-        ):
             return ""
 
         soup = BeautifulSoup(
@@ -539,7 +534,6 @@ def extract_webpage(url):
             "lxml",
         )
 
-        # Remove unnecessary elements.
         for element in soup(
             [
                 "script",
@@ -554,9 +548,9 @@ def extract_webpage(url):
                 "iframe",
             ]
         ):
+
             element.decompose()
 
-        # Prefer article/main content.
         main_content = (
             soup.find("article")
             or soup.find("main")
@@ -575,47 +569,38 @@ def extract_webpage(url):
             text,
         ).strip()
 
-        # Keep only a compact evidence section.
-        if len(text) > MAX_SOURCE_TEXT:
-            text = text[:MAX_SOURCE_TEXT] + "..."
-
-        return text
+        return text[:MAX_SOURCE_TEXT]
 
     except Exception:
+
         return ""
 
 
 # ============================================================
-# 12. SEARCH QUERY GENERATOR
+# 12. SEARCH QUERIES
 # ============================================================
 
 def create_search_queries(topic):
-    """
-    Create three compact search queries.
-
-    We intentionally use a small number of searches to avoid
-    unnecessary requests and keep the application fast.
-    """
-
-    current_year = 2026
 
     return [
-        f"{topic} {current_year}",
-        f"{topic} latest research evidence",
-        f"{topic} official report statistics",
+        f"{topic} 2026",
+        f"{topic} latest research",
+        f"{topic} official report",
     ]
 
 
 # ============================================================
-# 13. WEB SEARCH
+# 13. DDGS WEB SEARCH
 # ============================================================
 
-def perform_web_search(topic, progress_callback=None):
-    """
-    Search DDGS and return candidate sources.
-    """
+def perform_web_search(
+    topic,
+    progress_callback=None,
+):
 
-    queries = create_search_queries(topic)
+    queries = create_search_queries(
+        topic
+    )
 
     all_results = []
 
@@ -631,8 +616,9 @@ def perform_web_search(topic, progress_callback=None):
                 if progress_callback:
 
                     progress_callback(
-                        f"🔎 Searching the web — "
-                        f"query {index}/{len(queries)}"
+                        f"🔎 Searching "
+                        f"{index}/{len(queries)}: "
+                        f"{query}"
                     )
 
                 try:
@@ -644,14 +630,7 @@ def perform_web_search(topic, progress_callback=None):
                         )
                     )
 
-                except Exception as search_error:
-
-                    if progress_callback:
-
-                        progress_callback(
-                            f"⚠️ Search {index} had an issue: "
-                            f"{str(search_error)[:100]}"
-                        )
+                except Exception:
 
                     results = []
 
@@ -662,24 +641,23 @@ def perform_web_search(topic, progress_callback=None):
                         "",
                     )
 
-                    title = result.get(
-                        "title",
-                        "Untitled source",
-                    )
-
-                    snippet = result.get(
-                        "body",
-                        "",
-                    )
-
                     if not url:
+
                         continue
 
                     all_results.append(
                         {
-                            "title": title,
-                            "url": normalize_url(url),
-                            "snippet": snippet,
+                            "title": result.get(
+                                "title",
+                                "Untitled source",
+                            ),
+                            "url": normalize_url(
+                                url
+                            ),
+                            "snippet": result.get(
+                                "body",
+                                "",
+                            ),
                         }
                     )
 
@@ -692,93 +670,74 @@ def perform_web_search(topic, progress_callback=None):
         )
 
 
-    # --------------------------------------------------------
-    # Remove duplicate URLs.
-    # --------------------------------------------------------
+    # Remove duplicates.
 
     unique = {}
 
     for result in all_results:
 
-        url = result["url"]
+        if result["url"] not in unique:
 
-        if url not in unique:
+            unique[result["url"]] = result
 
-            unique[url] = result
-
-    return list(unique.values())
+    return list(
+        unique.values()
+    )
 
 
 # ============================================================
-# 14. SOURCE QUALITY SCORING
+# 14. SOURCE SCORING
 # ============================================================
 
 def source_score(source):
-    """
-    Basic source prioritization.
-
-    This is not claiming that a domain is always authoritative.
-    It simply gives common official/academic domains a higher
-    starting priority.
-    """
 
     domain = get_domain(
-        source.get("url", "")
+        source.get(
+            "url",
+            "",
+        )
     )
 
     score = 0
 
-    trusted_endings = [
-        ".gov",
-        ".edu",
-        ".org",
-    ]
+    if domain.endswith(".gov"):
+        score += 5
 
-    for ending in trusted_endings:
+    if domain.endswith(".edu"):
+        score += 4
 
-        if domain.endswith(ending):
-            score += 4
+    if domain.endswith(".org"):
+        score += 2
 
-    trusted_domains = [
+    important_domains = [
         "who.int",
         "worldbank.org",
         "un.org",
         "oecd.org",
         "nih.gov",
-        "nature.com",
-        "sciencedirect.com",
-        "reuters.com",
-        "bbc.com",
         "nasa.gov",
         "europa.eu",
+        "nature.com",
+        "reuters.com",
     ]
 
-    for trusted in trusted_domains:
+    for trusted in important_domains:
 
         if trusted in domain:
+
             score += 5
 
     return score
 
 
 # ============================================================
-# 15. READ SELECTED SOURCES
+# 15. COLLECT EVIDENCE
 # ============================================================
 
 def collect_evidence(
     candidates,
     progress_callback=None,
 ):
-    """
-    Read a small number of webpages.
-
-    Maximum:
-        5 sources
-        ~850 characters of page text each
-
-    This is deliberate so that the final CrewAI request
-    remains comfortably smaller than the 8K TPM limit.
-    """
 
     candidates = sorted(
         candidates,
@@ -786,135 +745,110 @@ def collect_evidence(
         reverse=True,
     )
 
-    selected_sources = []
+    selected = []
 
     for candidate in candidates:
 
-        if len(selected_sources) >= MAX_FINAL_SOURCES:
+        if len(selected) >= MAX_FINAL_SOURCES:
+
             break
 
         if progress_callback:
 
             progress_callback(
                 f"📄 Reading source "
-                f"{len(selected_sources) + 1}/"
+                f"{len(selected) + 1}/"
                 f"{MAX_FINAL_SOURCES}: "
-                f"{candidate['title'][:65]}"
+                f"{candidate['title'][:60]}"
             )
 
         content = extract_webpage(
             candidate["url"]
         )
 
-        # If webpage extraction fails, we can still use the
-        # search snippet as limited evidence.
         if not content:
 
             content = candidate.get(
                 "snippet",
                 "",
-            )
+            )[:MAX_SOURCE_TEXT]
 
         if not content:
+
             continue
 
-        selected_sources.append(
+        selected.append(
             {
                 "title": candidate["title"],
                 "url": candidate["url"],
                 "domain": get_domain(
                     candidate["url"]
                 ),
-                "snippet": candidate.get(
-                    "snippet",
-                    "",
-                )[:300],
-                "content": content[:MAX_SOURCE_TEXT],
+                "content": content,
             }
         )
 
-    return selected_sources
+    return selected
 
 
 # ============================================================
-# 16. BUILD COMPACT EVIDENCE PACKAGE
+# 16. BUILD SMALL EVIDENCE PACKAGE
 # ============================================================
 
 def build_evidence_package(
     topic,
     sources,
 ):
-    """
-    Build a compact prompt for the ONE CrewAI agent.
 
-    The evidence is deliberately limited.
-    """
-
-    sections = []
+    parts = []
 
     for index, source in enumerate(
         sources,
         start=1,
     ):
 
-        section = f"""
+        parts.append(
+            f"""
 SOURCE {index}
-Title: {source['title']}
+TITLE: {source['title']}
 URL: {source['url']}
-Domain: {source['domain']}
-
-Evidence:
-{source['content']}
-"""
-
-        sections.append(section.strip())
+EVIDENCE: {source['content']}
+""".strip()
+        )
 
     evidence = "\n\n".join(
-        sections
+        parts
     )
 
     return f"""
-RESEARCH QUESTION:
+QUESTION:
 {topic}
 
-CURRENT YEAR:
+YEAR:
 2026
 
-VERIFIED WEB SOURCES:
+WEB EVIDENCE:
 {evidence}
-
-IMPORTANT:
-The URLs above are the actual URLs collected by the
-application. Do not invent additional URLs.
-
-Use only the supplied evidence for source-specific claims.
-You may explain general reasoning, but do not invent
-statistics, quotations, studies, organizations, or facts.
-
-If sources disagree, explicitly mention the disagreement.
-If evidence is insufficient, say so.
 """.strip()
 
 
 # ============================================================
-# 17. CREATE THE SINGLE CREWAI AGENT
+# 17. SINGLE CREWAI AGENT
 # ============================================================
 
 research_agent = Agent(
-    role="Senior Research Analyst",
+
+    role="Research Analyst",
 
     goal=(
-        "Analyze verified web evidence and produce a clear, "
-        "accurate, detailed research report without inventing "
-        "sources, statistics, quotations, or evidence."
+        "Analyze the supplied web evidence and "
+        "write an accurate research report."
     ),
 
     backstory=(
         "You are a careful research analyst. "
-        "You distinguish facts from interpretation, "
-        "compare evidence across sources, identify "
-        "conflicting information, and clearly communicate "
-        "uncertainty. You never fabricate citations."
+        "Use evidence, compare sources, and never "
+        "invent sources, URLs, statistics, or quotations."
     ),
 
     llm=crew_llm,
@@ -922,11 +856,15 @@ research_agent = Agent(
     allow_delegation=False,
 
     verbose=False,
+
+    max_iter=1,
+
+    reasoning=False,
 )
 
 
 # ============================================================
-# 18. CREATE RESEARCH TASK
+# 18. RESEARCH TASK
 # ============================================================
 
 def create_research_task(
@@ -934,87 +872,58 @@ def create_research_task(
     evidence_package,
 ):
 
-    task_description = f"""
-You are the only AI research agent in this application.
-
-Your job is to analyze the supplied web evidence and produce
-a professional research report about the user's question.
-
-USER QUESTION:
+    description = f"""
+Research question:
 {topic}
 
-EVIDENCE PACKAGE:
+Use ONLY the following verified web evidence:
+
 {evidence_package}
 
-------------------------------------------------------------
-REPORT REQUIREMENTS
-------------------------------------------------------------
-
-Write a detailed but focused report.
+Write a useful research report.
 
 Use these sections:
 
 # Research Report
 
 ## 1. Executive Summary
-Give a concise overview of the main findings.
+Summarize the main findings.
 
 ## 2. Introduction
-Explain what the research question is about and why it
-matters.
+Explain the topic.
 
 ## 3. Key Findings
-Explain the most important findings in clear paragraphs.
+Explain the important evidence.
 
-## 4. Evidence Analysis
-Compare the supplied sources.
-Explain which findings are supported by multiple sources.
+## 4. Evidence Comparison
+Compare what the sources say.
 
-## 5. Conflicting or Uncertain Evidence
-If sources disagree or evidence is incomplete, explain that
-clearly.
+## 5. Uncertainty or Conflicting Evidence
+Mention disagreements or missing evidence.
 
-Do NOT pretend conflicting evidence does not exist.
+## 6. Conclusion
+Give an evidence-based conclusion.
 
-## 6. Important Facts and Data
-Include important statistics or factual information only
-when supported by the supplied evidence.
+## 7. Sources
+List the exact source titles and URLs supplied above.
 
-Never invent numbers.
+Rules:
 
-## 7. Practical Implications
-Explain what the findings mean in practical terms.
-
-## 8. Conclusion
-Summarize the evidence-based conclusion.
-
-## 9. Sources
-List the supplied sources using their exact titles and URLs.
-
-------------------------------------------------------------
-SOURCE RULES
-------------------------------------------------------------
-
-1. Never invent a URL.
-2. Never invent a source.
-3. Never invent a statistic.
-4. Never invent a quotation.
-5. Do not claim that you personally visited a source.
-6. Use the exact URLs supplied in the evidence package.
-7. Distinguish facts from interpretation.
-8. If evidence is insufficient, explicitly say so.
-9. Prefer evidence supported by more than one source.
-10. Keep the report readable and well organized.
-
-Return ONLY the research report.
+- Never invent a source.
+- Never invent a URL.
+- Never invent statistics.
+- Never invent quotations.
+- Use the supplied URLs exactly.
+- If evidence is insufficient, say so.
+- Keep the answer detailed but concise.
 """
 
     return Task(
-        description=task_description,
+        description=description,
         agent=research_agent,
         expected_output=(
-            "A detailed, evidence-based research report with "
-            "clear sections and a source list."
+            "A structured research report with "
+            "evidence and source URLs."
         ),
     )
 
@@ -1028,7 +937,7 @@ def create_research_crew(
     evidence_package,
 ):
 
-    research_task = create_research_task(
+    task = create_research_task(
         topic,
         evidence_package,
     )
@@ -1037,41 +946,34 @@ def create_research_crew(
         agents=[
             research_agent
         ],
-
         tasks=[
-            research_task
+            task
         ],
-
         process=Process.sequential,
-
         verbose=False,
     )
 
 
 # ============================================================
-# 20. CLEAN CREW OUTPUT
+# 20. CLEAN REPORT
 # ============================================================
 
 def clean_report(result):
-    """
-    Convert CrewAI output to normal text.
-    """
 
     if result is None:
+
         return ""
 
-    # CrewAI TaskOutput commonly has raw.
-    if hasattr(result, "raw"):
+    if hasattr(
+        result,
+        "raw",
+    ):
 
-        text = result.raw
+        return result.raw.strip()
 
-    else:
-
-        text = str(result)
-
-    text = text.strip()
-
-    return text
+    return str(
+        result
+    ).strip()
 
 
 # ============================================================
@@ -1128,7 +1030,9 @@ def create_pdf(
         parent=styles["BodyText"],
         fontSize=8,
         leading=11,
-        textColor=colors.HexColor("#334155"),
+        textColor=colors.HexColor(
+            "#334155"
+        ),
     )
 
     story = []
@@ -1140,10 +1044,17 @@ def create_pdf(
         )
     )
 
+    safe_topic = (
+        topic
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
     story.append(
         Paragraph(
             f"<b>Research Question:</b> "
-            f"{topic}",
+            f"{safe_topic}",
             body_style,
         )
     )
@@ -1155,75 +1066,68 @@ def create_pdf(
         )
     )
 
-    # --------------------------------------------------------
-    # Convert report markdown-ish formatting to PDF.
-    # --------------------------------------------------------
-
-    lines = report.split("\n")
-
-    for line in lines:
+    for line in report.split("\n"):
 
         line = line.strip()
 
         if not line:
+
             story.append(
                 Spacer(
                     1,
                     0.06 * inch,
                 )
             )
+
             continue
 
-        # Remove markdown heading symbols.
-        if line.startswith("# "):
+        safe_line = (
+            line
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
 
-            text = line[2:].strip()
+        safe_line = re.sub(
+            r"\*\*(.*?)\*\*",
+            r"<b>\1</b>",
+            safe_line,
+        )
+
+        if safe_line.startswith(
+            "# "
+        ):
 
             story.append(
                 Paragraph(
-                    text,
+                    safe_line[2:],
                     title_style,
                 )
             )
 
-        elif line.startswith("## "):
-
-            text = line[3:].strip()
+        elif safe_line.startswith(
+            "## "
+        ):
 
             story.append(
                 Paragraph(
-                    text,
+                    safe_line[3:],
                     heading_style,
                 )
             )
 
-        elif line.startswith("### "):
-
-            text = line[4:].strip()
+        elif safe_line.startswith(
+            "### "
+        ):
 
             story.append(
                 Paragraph(
-                    text,
+                    safe_line[4:],
                     heading_style,
                 )
             )
 
         else:
-
-            # Escape problematic HTML characters.
-            safe_line = (
-                line
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-
-            # Basic bold markdown.
-            safe_line = re.sub(
-                r"\*\*(.*?)\*\*",
-                r"<b>\1</b>",
-                safe_line,
-            )
 
             story.append(
                 Paragraph(
@@ -1232,11 +1136,9 @@ def create_pdf(
                 )
             )
 
-    # --------------------------------------------------------
-    # Verified sources section.
-    # --------------------------------------------------------
-
-    story.append(PageBreak())
+    story.append(
+        PageBreak()
+    )
 
     story.append(
         Paragraph(
@@ -1250,15 +1152,23 @@ def create_pdf(
         start=1,
     ):
 
-        source_text = (
-            f"<b>{index}. "
-            f"{source['title']}</b><br/>"
-            f"{source['url']}"
+        safe_title = (
+            source["title"]
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+        safe_url = (
+            source["url"]
+            .replace("&", "&amp;")
         )
 
         story.append(
             Paragraph(
-                source_text,
+                f"<b>{index}. "
+                f"{safe_title}</b><br/>"
+                f"{safe_url}",
                 small_style,
             )
         )
@@ -1270,7 +1180,9 @@ def create_pdf(
             )
         )
 
-    document.build(story)
+    document.build(
+        story
+    )
 
     buffer.seek(0)
 
@@ -1278,13 +1190,43 @@ def create_pdf(
 
 
 # ============================================================
-# 22. USER INPUT
+# 22. SESSION STATE
+# ============================================================
+
+if "last_report" not in st.session_state:
+
+    st.session_state[
+        "last_report"
+    ] = ""
+
+
+if "last_sources" not in st.session_state:
+
+    st.session_state[
+        "last_sources"
+    ] = []
+
+
+if "last_topic" not in st.session_state:
+
+    st.session_state[
+        "last_topic"
+    ] = ""
+
+
+# ============================================================
+# 23. USER QUESTION
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">📝 What would you like to research?</div>',
+    """
+    <div class="section-title">
+        📝 What would you like to research?
+    </div>
+    """,
     unsafe_allow_html=True,
 )
+
 
 topic = st.text_area(
     "Research question",
@@ -1298,12 +1240,18 @@ topic = st.text_area(
 
 
 # ============================================================
-# 23. EXAMPLE QUESTIONS
+# 24. EXAMPLE QUESTIONS
 # ============================================================
 
-st.markdown("**💡 Example research questions**")
+st.markdown(
+    "**💡 Example research questions**"
+)
 
-example_columns = st.columns(3)
+
+example_columns = st.columns(
+    3
+)
+
 
 example_questions = [
     "What are the latest developments in AI in 2026?",
@@ -1328,10 +1276,11 @@ for column, question in zip(
 
 
 # ============================================================
-# 24. START RESEARCH
+# 25. START BUTTON
 # ============================================================
 
 st.markdown("")
+
 
 start_research = st.button(
     "🚀 Start Research",
@@ -1341,7 +1290,7 @@ start_research = st.button(
 
 
 # ============================================================
-# 25. RESEARCH EXECUTION
+# 26. RESEARCH PROCESS
 # ============================================================
 
 if start_research:
@@ -1356,16 +1305,21 @@ if start_research:
 
     topic = topic.strip()
 
-    # --------------------------------------------------------
-    # Session state
-    # --------------------------------------------------------
+    st.session_state[
+        "last_topic"
+    ] = topic
 
-    st.session_state["last_topic"] = topic
-    st.session_state["last_report"] = ""
-    st.session_state["last_sources"] = []
+    st.session_state[
+        "last_report"
+    ] = ""
+
+    st.session_state[
+        "last_sources"
+    ] = []
+
 
     # --------------------------------------------------------
-    # Status container
+    # STATUS
     # --------------------------------------------------------
 
     with st.status(
@@ -1374,7 +1328,7 @@ if start_research:
     ) as status:
 
         # ----------------------------------------------------
-        # Stage 1
+        # STEP 1
         # ----------------------------------------------------
 
         st.write(
@@ -1385,18 +1339,18 @@ if start_research:
             f"**Question:** {topic}"
         )
 
+
         # ----------------------------------------------------
-        # Stage 2
+        # STEP 2
         # ----------------------------------------------------
 
         st.write(
-            "🧠 Preparing the research strategy..."
+            "🧠 Preparing research strategy..."
         )
 
-        time.sleep(0.2)
 
         # ----------------------------------------------------
-        # Stage 3 — SEARCH
+        # STEP 3
         # ----------------------------------------------------
 
         st.write(
@@ -1406,21 +1360,23 @@ if start_research:
         try:
 
             candidates = perform_web_search(
-                topic
+                topic,
+                progress_callback=st.write,
             )
 
-        except Exception as search_error:
+        except Exception as error:
 
             status.update(
-                label="❌ Research failed",
+                label="❌ Web search failed",
                 state="error",
             )
 
             st.error(
-                f"Web search failed: {search_error}"
+                str(error)
             )
 
             st.stop()
+
 
         if not candidates:
 
@@ -1431,21 +1387,25 @@ if start_research:
 
             st.warning(
                 "No web sources were found. "
-                "Try a different or more specific question."
+                "Try another question."
             )
 
             st.stop()
 
+
         st.write(
-            f"✅ Found {len(candidates)} candidate sources."
+            f"✅ Found {len(candidates)} "
+            f"candidate sources."
         )
 
+
         # ----------------------------------------------------
-        # Stage 4 — EXTRACTION
+        # STEP 4
         # ----------------------------------------------------
 
         st.write(
-            "📄 Reading selected source webpages..."
+            "📄 Extracting information "
+            "from webpages..."
         )
 
         sources = collect_evidence(
@@ -1453,80 +1413,82 @@ if start_research:
             progress_callback=st.write,
         )
 
+
         if not sources:
 
             status.update(
-                label="⚠️ Could not read sources",
+                label="⚠️ Source extraction failed",
                 state="error",
             )
 
             st.warning(
-                "Search results were found, but the webpages "
-                "could not be read."
+                "Search results were found, but "
+                "their content could not be extracted."
             )
 
             st.stop()
 
+
         st.write(
-            f"✅ Collected evidence from "
+            f"✅ Extracted evidence from "
             f"{len(sources)} sources."
         )
 
-        # ----------------------------------------------------
-        # Stage 5 — COMPACT EVIDENCE
-        # ----------------------------------------------------
-
-        st.write(
-            "⚖️ Comparing and compacting evidence..."
-        )
-
-        evidence_package = build_evidence_package(
-            topic,
-            sources,
-        )
-
-        # Display approximate character count.
-        evidence_chars = len(
-            evidence_package
-        )
-
-        st.write(
-            f"📦 Evidence package prepared "
-            f"({evidence_chars:,} characters)."
-        )
 
         # ----------------------------------------------------
-        # Stage 6 — SINGLE CREWAI AGENT
+        # STEP 5
         # ----------------------------------------------------
 
         st.write(
-            "🤖 Sending the evidence to the single "
-            "CrewAI research agent..."
+            "⚖️ Cross-checking evidence "
+            "across sources..."
         )
 
+        evidence_package = (
+            build_evidence_package(
+                topic,
+                sources,
+            )
+        )
+
+
         st.write(
-            "This is the only LLM stage of the workflow, "
-            "so the app avoids repeatedly sending large "
-            "webpage contents to Groq."
+            f"📦 Compact evidence prepared "
+            f"({len(evidence_package):,} characters)."
+        )
+
+
+        # ----------------------------------------------------
+        # STEP 6
+        # ----------------------------------------------------
+
+        st.write(
+            "🤖 AI is analyzing the "
+            "collected evidence..."
         )
 
         try:
 
-            research_crew = create_research_crew(
-                topic,
-                evidence_package,
+            research_crew = (
+                create_research_crew(
+                    topic,
+                    evidence_package,
+                )
             )
 
-            result = research_crew.kickoff()
+            result = (
+                research_crew.kickoff()
+            )
 
             report = clean_report(
                 result
             )
 
-        except Exception as agent_error:
+
+        except Exception as error:
 
             error_text = str(
-                agent_error
+                error
             )
 
             status.update(
@@ -1534,44 +1496,43 @@ if start_research:
                 state="error",
             )
 
-            # ------------------------------------------------
-            # Friendly Groq token-limit message.
-            # ------------------------------------------------
+            st.error(
+                "The AI analysis failed."
+            )
+
+            st.markdown(
+                "**Actual error from Groq/CrewAI:**"
+            )
+
+            st.code(
+                error_text
+            )
 
             if (
                 "413" in error_text
-                or "Request too large" in error_text
-                or "tokens per minute" in error_text
                 or "Requested" in error_text
+                or "tokens per minute" in error_text
             ):
 
-                st.error(
+                st.warning(
                     """
-                    The Groq request was still too large for
-                    the current 8K TPM limit.
+                    The request is still exceeding the
+                    current Groq token limit.
 
-                    The application has already been designed
-                    to keep the research package small, but
-                    CrewAI itself adds some prompt overhead.
-
-                    Try a shorter research question. If this
-                    still happens, the evidence limit can be
-                    reduced further.
+                    The app has already reduced the research
+                    evidence and agent iterations. If this
+                    message appears again, we will reduce the
+                    final report/output budget further instead
+                    of changing the interface.
                     """
-                )
-
-            else:
-
-                st.error(
-                    "An error occurred while running the "
-                    "research agent."
-                )
-
-                st.code(
-                    error_text
                 )
 
             st.stop()
+
+
+        # ----------------------------------------------------
+        # STEP 7
+        # ----------------------------------------------------
 
         if not report:
 
@@ -1581,46 +1542,47 @@ if start_research:
             )
 
             st.warning(
-                "The research agent did not return a report."
+                "The research agent returned no report."
             )
 
             st.stop()
 
-        # ----------------------------------------------------
-        # Stage 7
-        # ----------------------------------------------------
 
         st.write(
             "📊 Formatting the research report..."
         )
 
-        time.sleep(0.2)
-
-        st.write(
-            "🔗 Attaching verified source URLs..."
+        time.sleep(
+            0.2
         )
 
-        time.sleep(0.2)
 
-        # ----------------------------------------------------
-        # Complete
-        # ----------------------------------------------------
+        st.write(
+            "🔗 Adding verified source URLs..."
+        )
+
 
         status.update(
             label="✅ Research complete",
             state="complete",
         )
 
-    # ========================================================
-    # SAVE RESULTS
-    # ========================================================
 
-    st.session_state["last_report"] = report
-    st.session_state["last_sources"] = sources
+    # --------------------------------------------------------
+    # SAVE RESULTS
+    # --------------------------------------------------------
+
+    st.session_state[
+        "last_report"
+    ] = report
+
+    st.session_state[
+        "last_sources"
+    ] = sources
 
 
 # ============================================================
-# 26. DISPLAY REPORT
+# 27. DISPLAY REPORT
 # ============================================================
 
 if st.session_state.get(
@@ -1642,10 +1604,20 @@ if st.session_state.get(
         "Research",
     )
 
+
+    # --------------------------------------------------------
+    # REPORT HEADER
+    # --------------------------------------------------------
+
     st.markdown(
-        '<div class="section-title">📑 Research Report</div>',
+        """
+        <div class="section-title">
+            📑 Research Report
+        </div>
+        """,
         unsafe_allow_html=True,
     )
+
 
     st.markdown(
         """
@@ -1656,10 +1628,12 @@ if st.session_state.get(
         unsafe_allow_html=True,
     )
 
+
     st.markdown("")
 
+
     # --------------------------------------------------------
-    # Main report
+    # REPORT
     # --------------------------------------------------------
 
     st.markdown(
@@ -1676,20 +1650,26 @@ if st.session_state.get(
         unsafe_allow_html=True,
     )
 
+
     # ========================================================
     # VERIFIED SOURCES
     # ========================================================
 
     st.markdown(
-        '<div class="section-title">🔗 Verified Sources Used</div>',
+        """
+        <div class="section-title">
+            🔗 Verified Sources Used
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
+
     st.caption(
-        "These URLs were collected directly by the application's "
-        "web-search process. They are shown separately so the "
-        "research report does not depend on the AI inventing URLs."
+        "These URLs were collected directly by the "
+        "web-search process."
     )
+
 
     for index, source in enumerate(
         sources,
@@ -1722,14 +1702,20 @@ if st.session_state.get(
             source["url"],
         )
 
+
     # ========================================================
     # DOWNLOADS
     # ========================================================
 
     st.markdown(
-        '<div class="section-title">⬇️ Download Research</div>',
+        """
+        <div class="section-title">
+            ⬇️ Download Research
+        </div>
+        """,
         unsafe_allow_html=True,
     )
+
 
     pdf_bytes = create_pdf(
         topic_used,
@@ -1737,7 +1723,11 @@ if st.session_state.get(
         sources,
     )
 
-    download_columns = st.columns(2)
+
+    download_columns = st.columns(
+        2
+    )
+
 
     with download_columns[0]:
 
@@ -1748,6 +1738,7 @@ if st.session_state.get(
             mime="application/pdf",
             use_container_width=True,
         )
+
 
     with download_columns[1]:
 
@@ -1761,7 +1752,7 @@ if st.session_state.get(
 
 
 # ============================================================
-# 27. FOOTER
+# 28. FOOTER
 # ============================================================
 
 st.markdown(
