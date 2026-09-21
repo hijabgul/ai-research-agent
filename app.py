@@ -1093,4 +1093,3 @@ if st.session_state["research_result"]:
 
             use_container_width=True
         )
-```
