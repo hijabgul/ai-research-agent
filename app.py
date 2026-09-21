@@ -1,11 +1,5 @@
-# ============================================================
-# AI RESEARCH AGENT
-# One CrewAI Agent + DDGS Web Research + Groq
-# Streamlit Community Cloud
-# ============================================================
-
 import re
-import time
+import html
 from io import BytesIO
 from urllib.parse import urlparse
 
@@ -17,64 +11,96 @@ from ddgs import DDGS
 import litellm
 from crewai import Agent, Task, Crew, Process, LLM
 
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    PageBreak,
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 
 # ============================================================
-# 1. LITELLM SAFETY PATCH
+# GROQ / LITELLM SAFETY PATCH
 # ============================================================
 
 _original_completion = litellm.completion
 _original_acompletion = getattr(litellm, "acompletion", None)
 
 
-def _remove_cache_breakpoints(value):
+def remove_unsupported_parameters(value):
+    """
+    Recursively removes parameters that Groq does not accept.
+    """
     if isinstance(value, dict):
         cleaned = {}
 
         for key, item in value.items():
-            if key == "cache_breakpoint":
+            if key in {
+                "cache_breakpoint",
+                "cache_control",
+            }:
                 continue
 
-            cleaned[key] = _remove_cache_breakpoints(item)
+            cleaned[key] = remove_unsupported_parameters(item)
 
         return cleaned
 
     if isinstance(value, list):
-        return [_remove_cache_breakpoints(item) for item in value]
+        return [
+            remove_unsupported_parameters(item)
+            for item in value
+        ]
 
     return value
 
 
-def _safe_completion(*args, **kwargs):
-    cleaned_kwargs = _remove_cache_breakpoints(kwargs)
-    return _original_completion(*args, **cleaned_kwargs)
+def safe_completion(*args, **kwargs):
+    """
+    Keeps the Groq request small enough for the user's
+    current token-per-minute limit.
+    """
+
+    kwargs = remove_unsupported_parameters(kwargs)
+
+    model = str(kwargs.get("model", ""))
+
+    if "gpt-oss" in model:
+
+        # GPT-OSS supports low reasoning.
+        kwargs["reasoning_effort"] = "low"
+
+        # Do not allow CrewAI/LiteLLM to request a huge completion.
+        kwargs["max_tokens"] = 1200
+
+        # GPT-OSS can return reasoning separately.
+        kwargs["include_reasoning"] = False
+
+    return _original_completion(*args, **kwargs)
 
 
-litellm.completion = _safe_completion
+litellm.completion = safe_completion
 
 
 if _original_acompletion is not None:
 
-    async def _safe_acompletion(*args, **kwargs):
-        cleaned_kwargs = _remove_cache_breakpoints(kwargs)
-        return await _original_acompletion(*args, **cleaned_kwargs)
+    async def safe_acompletion(*args, **kwargs):
 
-    litellm.acompletion = _safe_acompletion
+        kwargs = remove_unsupported_parameters(kwargs)
+
+        model = str(kwargs.get("model", ""))
+
+        if "gpt-oss" in model:
+            kwargs["reasoning_effort"] = "low"
+            kwargs["max_tokens"] = 1200
+            kwargs["include_reasoning"] = False
+
+        return await _original_acompletion(
+            *args,
+            **kwargs
+        )
+
+    litellm.acompletion = safe_acompletion
 
 
 # ============================================================
-# 2. PAGE CONFIG
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -86,44 +112,62 @@ st.set_page_config(
 
 
 # ============================================================
-# 3. CSS
+# CSS
 # ============================================================
 
 st.markdown(
     """
     <style>
 
+    /* ---------- GLOBAL ---------- */
+
     .stApp {
         background:
             radial-gradient(
                 circle at top right,
-                rgba(37, 99, 235, 0.12),
-                transparent 35%
+                rgba(37, 99, 235, 0.10),
+                transparent 30%
             ),
-            #08111f;
-        color: #e5e7eb;
+            #07111f;
+        color: #e5edf8;
     }
 
-    .block-container {
-        max-width: 1200px;
-        padding-top: 2rem;
-        padding-bottom: 3rem;
+    .main {
+        padding-top: 1rem;
     }
+
+    h1, h2, h3 {
+        color: #f8fafc !important;
+    }
+
+    p, label, span {
+        color: #cbd5e1;
+    }
+
+
+    /* ---------- HERO ---------- */
 
     .hero {
-        padding: 30px 10px 20px 10px;
-        text-align: center;
-    }
+        padding: 28px;
+        border-radius: 22px;
+        margin-bottom: 24px;
 
-    .hero-icon {
-        font-size: 48px;
-        margin-bottom: 5px;
+        background:
+            linear-gradient(
+                135deg,
+                rgba(15, 35, 64, 0.98),
+                rgba(9, 24, 45, 0.98)
+            );
+
+        border: 1px solid rgba(96, 165, 250, 0.20);
+
+        box-shadow:
+            0 20px 50px rgba(0,0,0,0.25);
     }
 
     .hero-title {
         font-size: 42px;
         font-weight: 800;
-        letter-spacing: -1px;
         color: #f8fafc;
         margin-bottom: 8px;
     }
@@ -131,135 +175,176 @@ st.markdown(
     .hero-subtitle {
         font-size: 17px;
         color: #94a3b8;
-        max-width: 750px;
-        margin: auto;
         line-height: 1.6;
-    }
-
-    .workflow-container {
-        display: grid;
-        grid-template-columns: repeat(6, 1fr);
-        gap: 10px;
-        margin: 25px 0;
-    }
-
-    .workflow-card {
-        background: rgba(15, 23, 42, 0.75);
-        border: 1px solid rgba(148, 163, 184, 0.14);
-        border-radius: 12px;
-        padding: 14px 8px;
-        text-align: center;
-        min-height: 90px;
-    }
-
-    .workflow-number {
-        width: 26px;
-        height: 26px;
-        border-radius: 50%;
-        background: #2563eb;
-        color: white;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 13px;
-        font-weight: 700;
-        margin-bottom: 7px;
-    }
-
-    .workflow-title {
-        font-size: 12px;
-        color: #e2e8f0;
-        font-weight: 600;
-    }
-
-    .section-title {
-        font-size: 21px;
-        font-weight: 700;
-        color: #f8fafc;
-        margin-top: 25px;
-        margin-bottom: 12px;
-    }
-
-    .source-card {
-        background: rgba(15, 23, 42, 0.82);
-        border: 1px solid rgba(96, 165, 250, 0.18);
-        border-radius: 12px;
-        padding: 14px;
-        margin-bottom: 10px;
-    }
-
-    .source-title {
-        color: #dbeafe;
-        font-weight: 700;
-        font-size: 15px;
-        margin-bottom: 5px;
-    }
-
-    .source-url {
-        color: #60a5fa;
-        font-size: 12px;
-        word-break: break-all;
-    }
-
-    .source-domain {
-        color: #94a3b8;
-        font-size: 12px;
-        margin-top: 5px;
-    }
-
-    .report-box {
-        background: rgba(15, 23, 42, 0.82);
-        border: 1px solid rgba(96, 165, 250, 0.18);
-        border-radius: 14px;
-        padding: 22px;
-        line-height: 1.75;
     }
 
     .badge {
         display: inline-block;
-        padding: 5px 10px;
+        padding: 6px 12px;
         border-radius: 999px;
-        background: rgba(37, 99, 235, 0.14);
+        margin-right: 7px;
+        margin-top: 12px;
+
+        background: rgba(37,99,235,0.14);
+        border: 1px solid rgba(96,165,250,0.20);
+
         color: #93c5fd;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+
+    /* ---------- WORKFLOW ---------- */
+
+    .workflow-card {
+        background: rgba(15, 31, 52, 0.90);
+        border: 1px solid rgba(148,163,184,0.13);
+
+        border-radius: 16px;
+        padding: 18px;
+        text-align: center;
+
+        min-height: 125px;
+    }
+
+    .workflow-number {
+        font-size: 25px;
+        font-weight: 800;
+        color: #60a5fa;
+    }
+
+    .workflow-title {
+        font-weight: 700;
+        margin-top: 5px;
+        color: #f8fafc;
+    }
+
+    .workflow-text {
         font-size: 12px;
-        margin-right: 6px;
-        border: 1px solid rgba(96, 165, 250, 0.18);
+        color: #94a3b8;
+        margin-top: 5px;
     }
 
-    [data-testid="stSidebar"] {
-        background: #07101d;
-        border-right: 1px solid rgba(148, 163, 184, 0.10);
+
+    /* ---------- INPUT ---------- */
+
+    .input-title {
+        font-size: 21px;
+        font-weight: 700;
+        margin-bottom: 8px;
     }
 
-    textarea {
-        background-color: #0f1b2d !important;
-        color: #f8fafc !important;
-        border: 1px solid #243b5a !important;
+
+    /* ---------- REPORT ---------- */
+
+    .report-header {
+        margin-top: 30px;
+        margin-bottom: 12px;
+        font-size: 25px;
+        font-weight: 800;
     }
+
+    .report-box {
+        background: #0b1728;
+        border: 1px solid rgba(96,165,250,0.18);
+        border-radius: 18px;
+        padding: 26px;
+        line-height: 1.75;
+    }
+
+
+    /* ---------- SOURCES ---------- */
+
+    .source-card {
+        background: #0b1728;
+        border: 1px solid rgba(148,163,184,0.13);
+        border-radius: 14px;
+        padding: 17px;
+        margin-bottom: 12px;
+    }
+
+    .source-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #e2e8f0;
+    }
+
+    .source-domain {
+        font-size: 12px;
+        color: #60a5fa;
+        margin-top: 5px;
+    }
+
+    .source-url {
+        font-size: 12px;
+        color: #94a3b8;
+        word-break: break-all;
+        margin-top: 7px;
+    }
+
+
+    /* ---------- BUTTONS ---------- */
 
     .stButton > button {
-        border-radius: 9px;
+        border-radius: 10px;
+        min-height: 42px;
+
+        border: 1px solid rgba(96,165,250,0.25);
+
+        background: #10233d;
+        color: #dbeafe;
+
+        font-weight: 600;
+    }
+
+    .stButton > button:hover {
+        border-color: #60a5fa;
+        background: #15304f;
+        color: white;
+    }
+
+
+    /* ---------- SIDEBAR ---------- */
+
+    section[data-testid="stSidebar"] {
+        background: #07111f;
+        border-right: 1px solid rgba(148,163,184,0.12);
+    }
+
+    .sidebar-title {
+        font-size: 22px;
+        font-weight: 800;
+        color: #f8fafc;
+    }
+
+    .sidebar-item {
+        background: #0d1b2e;
+        border-radius: 12px;
+        padding: 12px;
+        margin: 8px 0;
+        border: 1px solid rgba(148,163,184,0.10);
+    }
+
+    .sidebar-label {
+        color: #94a3b8;
+        font-size: 12px;
+    }
+
+    .sidebar-value {
+        color: #e2e8f0;
         font-weight: 700;
+        margin-top: 3px;
     }
 
-    @media (max-width: 900px) {
 
-        .workflow-container {
-            grid-template-columns: repeat(3, 1fr);
-        }
+    /* ---------- STATUS ---------- */
 
-    }
-
-    @media (max-width: 600px) {
-
-        .workflow-container {
-            grid-template-columns: repeat(2, 1fr);
-        }
-
-        .hero-title {
-            font-size: 31px;
-        }
-
+    .status-box {
+        background: rgba(15,31,52,0.85);
+        border: 1px solid rgba(96,165,250,0.15);
+        padding: 15px;
+        border-radius: 14px;
+        margin-top: 15px;
     }
 
     </style>
@@ -269,243 +354,341 @@ st.markdown(
 
 
 # ============================================================
-# 4. HEADER
+# SESSION STATE
+# ============================================================
+
+if "research_input" not in st.session_state:
+    st.session_state.research_input = ""
+
+if "last_report" not in st.session_state:
+    st.session_state.last_report = ""
+
+if "last_sources" not in st.session_state:
+    st.session_state.last_sources = []
+
+if "last_topic" not in st.session_state:
+    st.session_state.last_topic = ""
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.markdown(
+        '<div class="sidebar-title">🔎 AI Research Agent</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown("---")
+
+    st.markdown(
+        """
+        <div class="sidebar-item">
+            <div class="sidebar-label">ARCHITECTURE</div>
+            <div class="sidebar-value">1 CrewAI Agent</div>
+        </div>
+
+        <div class="sidebar-item">
+            <div class="sidebar-label">WEB RESEARCH</div>
+            <div class="sidebar-value">DuckDuckGo + Web Pages</div>
+        </div>
+
+        <div class="sidebar-item">
+            <div class="sidebar-label">LLM</div>
+            <div class="sidebar-value">Groq GPT-OSS 20B</div>
+        </div>
+
+        <div class="sidebar-item">
+            <div class="sidebar-label">REASONING</div>
+            <div class="sidebar-value">Low / Token Safe</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown("---")
+
+    st.caption(
+        "The agent searches the live web, extracts evidence, "
+        "cross-checks sources, and generates a cited research report."
+    )
+
+
+# ============================================================
+# HERO
 # ============================================================
 
 st.markdown(
     """
     <div class="hero">
 
-        <div class="hero-icon">🔎</div>
-
         <div class="hero-title">
-            AI Research Agent
+            🔎 AI Research Agent
         </div>
 
         <div class="hero-subtitle">
             Research current topics using live web sources,
-            cross-check evidence, and generate a detailed
-            source-backed research report.
+            evidence extraction, source verification, and
+            a single CrewAI research agent.
+        </div>
+
+        <div>
+            <span class="badge">ONE CREWAI AGENT</span>
+            <span class="badge">LIVE WEB</span>
+            <span class="badge">GROQ</span>
+            <span class="badge">SOURCE CITATIONS</span>
         </div>
 
     </div>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
 
 # ============================================================
-# 5. WORKFLOW
+# WORKFLOW
+# ============================================================
+
+st.subheader("How it works")
+
+workflow = st.columns(5)
+
+steps = [
+    ("01", "Question", "Enter a research topic"),
+    ("02", "Search", "Find current web sources"),
+    ("03", "Extract", "Read source evidence"),
+    ("04", "Analyze", "CrewAI research agent"),
+    ("05", "Report", "Cited research result"),
+]
+
+for col, step in zip(workflow, steps):
+
+    with col:
+
+        st.markdown(
+            f"""
+            <div class="workflow-card">
+
+                <div class="workflow-number">
+                    {step[0]}
+                </div>
+
+                <div class="workflow-title">
+                    {step[1]}
+                </div>
+
+                <div class="workflow-text">
+                    {step[2]}
+                </div>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+
+# ============================================================
+# EXAMPLE QUESTIONS
 # ============================================================
 
 st.markdown(
-    """
-    <div class="workflow-container">
+    '<div class="input-title">💡 Example Research Questions</div>',
+    unsafe_allow_html=True
+)
 
-        <div class="workflow-card">
-            <div class="workflow-number">1</div>
-            <div class="workflow-title">Question</div>
-        </div>
+example_columns = st.columns(3)
 
-        <div class="workflow-card">
-            <div class="workflow-number">2</div>
-            <div class="workflow-title">Web Search</div>
-        </div>
+examples = [
+    "What are the latest AI trends in 2026?",
+    "What is the impact of AI on education?",
+    "What are the latest developments in renewable energy?",
+]
 
-        <div class="workflow-card">
-            <div class="workflow-number">3</div>
-            <div class="workflow-title">Extract</div>
-        </div>
+for i, example in enumerate(examples):
 
-        <div class="workflow-card">
-            <div class="workflow-number">4</div>
-            <div class="workflow-title">Cross-check</div>
-        </div>
+    with example_columns[i]:
 
-        <div class="workflow-card">
-            <div class="workflow-number">5</div>
-            <div class="workflow-title">AI Analysis</div>
-        </div>
+        if st.button(
+            example,
+            key=f"example_{i}",
+            use_container_width=True
+        ):
 
-        <div class="workflow-card">
-            <div class="workflow-number">6</div>
-            <div class="workflow-title">Report</div>
-        </div>
+            st.session_state.research_input = example
+            st.rerun()
 
-    </div>
-    """,
-    unsafe_allow_html=True,
+
+# ============================================================
+# USER INPUT
+# ============================================================
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="input-title">📝 Research Question</div>',
+    unsafe_allow_html=True
+)
+
+topic = st.text_area(
+    "Research topic",
+    key="research_input",
+    height=130,
+    placeholder=(
+        "Example: What are the latest developments "
+        "in artificial intelligence in 2026?"
+    ),
+    label_visibility="collapsed",
 )
 
 
 # ============================================================
-# 6. SIDEBAR
+# HELPER FUNCTIONS
 # ============================================================
 
-with st.sidebar:
-
-    st.markdown("## ⚙️ Research Settings")
-
-    st.markdown(
-        """
-        <span class="badge">1 CrewAI Agent</span>
-        <span class="badge">Live Web</span>
-        <span class="badge">Groq</span>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("---")
-
-    st.markdown("### 📚 Research method")
-
-    st.write(
-        """
-        The application searches the current web,
-        reads selected source pages, compares the evidence,
-        and sends a compact evidence package to one
-        CrewAI research agent.
-        """
-    )
-
-    st.markdown("---")
-
-    st.markdown("### 🛡️ Evidence rules")
-
-    st.write(
-        """
-        • Prefer authoritative sources  
-        • Preserve original URLs  
-        • Compare multiple sources  
-        • Do not invent evidence  
-        • Identify uncertainty
-        """
-    )
-
-    st.markdown("---")
-
-    st.caption(
-        "Built with Streamlit, CrewAI, Groq, DDGS and Python."
-    )
-
-
-# ============================================================
-# 7. GROQ SECRET
-# ============================================================
-
-try:
-
-    groq_api_key = st.secrets["GROQ_API_KEY"]
-
-except Exception:
-
-    st.error(
-        """
-        GROQ_API_KEY was not found in Streamlit Secrets.
-
-        Go to:
-
-        Streamlit Cloud → App → Settings → Secrets
-
-        and make sure you have:
-
-        GROQ_API_KEY = "your_key_here"
-        """
-    )
-
-    st.stop()
-
-
-# ============================================================
-# 8. GROQ MODEL
-# ============================================================
-
-GROQ_MODEL = "openai/gpt-oss-120b"
-
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-
-
-# ============================================================
-# IMPORTANT TOKEN SETTINGS
-# ============================================================
-#
-# Your current Groq organization has an 8K TPM limit.
-#
-# Therefore:
-#
-# 1. We keep webpage evidence very small.
-# 2. We keep the task prompt short.
-# 3. We tell the model to use LOW reasoning.
-# 4. We allow only ONE agent iteration.
-#
-# ============================================================
-
-
-crew_llm = LLM(
-    model=GROQ_MODEL,
-    api_key=groq_api_key,
-    api_base=GROQ_BASE_URL,
-    temperature=0.2,
-    max_tokens=1800,
-    reasoning_effort="low",
-)
-
-
-# ============================================================
-# 9. SEARCH SETTINGS
-# ============================================================
-
-MAX_SEARCH_RESULTS_PER_QUERY = 3
-
-MAX_FINAL_SOURCES = 4
-
-MAX_SOURCE_TEXT = 600
-
+MAX_RESULTS_PER_QUERY = 2
+MAX_SELECTED_SOURCES = 3
+MAX_PAGE_TEXT = 500
 REQUEST_TIMEOUT = 10
 
 
-# ============================================================
-# 10. URL HELPERS
-# ============================================================
+def clean_text(text):
+    """
+    Cleans whitespace and removes excessive characters.
+    """
+
+    if not text:
+        return ""
+
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
 
 def get_domain(url):
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+
+def search_web(query):
+    """
+    Search current web using DDGS.
+    """
+
+    results = []
+
+    queries = [
+        f"{query} 2026",
+        f"{query} latest research evidence",
+        f"{query} official report",
+    ]
+
+    seen_urls = set()
 
     try:
 
-        domain = urlparse(url).netloc.lower()
+        with DDGS() as ddgs:
 
-        return domain.replace(
-            "www.",
-            ""
+            for search_query in queries:
+
+                try:
+
+                    found = ddgs.text(
+                        search_query,
+                        max_results=MAX_RESULTS_PER_QUERY
+                    )
+
+                    for item in found:
+
+                        url = item.get("href") or item.get("url")
+
+                        if not url:
+                            continue
+
+                        if url in seen_urls:
+                            continue
+
+                        seen_urls.add(url)
+
+                        results.append(
+                            {
+                                "title": clean_text(
+                                    item.get("title", "Untitled source")
+                                ),
+                                "url": url,
+                                "domain": get_domain(url),
+                                "snippet": clean_text(
+                                    item.get("body", "")
+                                ),
+                            }
+                        )
+
+                except Exception:
+                    continue
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"Web search could not start: {str(e)}"
         )
 
-    except Exception:
-
-        return url
+    return results
 
 
-def normalize_url(url):
+def source_score(source):
+    """
+    Gives priority to authoritative domains.
+    """
 
-    try:
+    domain = source.get("domain", "")
 
-        parsed = urlparse(url)
+    score = 0
 
-        return (
-            f"{parsed.scheme}://"
-            f"{parsed.netloc}"
-            f"{parsed.path}"
-        ).rstrip("/")
+    if domain.endswith(".gov"):
+        score += 10
 
-    except Exception:
+    if domain.endswith(".edu"):
+        score += 8
 
-        return url
+    if domain.endswith(".org"):
+        score += 5
+
+    trusted_domains = [
+        "who.int",
+        "worldbank.org",
+        "un.org",
+        "oecd.org",
+        "nih.gov",
+        "nature.com",
+        "sciencedirect.com",
+        "reuters.com",
+        "bbc.com",
+        "nasa.gov",
+        "europa.eu",
+    ]
+
+    for trusted in trusted_domains:
+
+        if trusted in domain:
+            score += 10
+
+    if len(source.get("snippet", "")) > 100:
+        score += 2
+
+    return score
 
 
-# ============================================================
-# 11. WEBPAGE EXTRACTION
-# ============================================================
+def extract_page(source):
+    """
+    Reads the actual webpage.
+    """
 
-def extract_webpage(url):
+    url = source["url"]
 
     headers = {
         "User-Agent": (
@@ -513,7 +696,7 @@ def extract_webpage(url):
             "(Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 "
             "(KHTML, like Gecko) "
-            "Chrome/153.0 Safari/537.36"
+            "Chrome/131.0 Safari/537.36"
         )
     }
 
@@ -522,23 +705,21 @@ def extract_webpage(url):
         response = requests.get(
             url,
             headers=headers,
-            timeout=REQUEST_TIMEOUT,
+            timeout=REQUEST_TIMEOUT
         )
 
         if response.status_code != 200:
-
-            return ""
+            return source["snippet"]
 
         soup = BeautifulSoup(
             response.text,
-            "lxml",
+            "lxml"
         )
 
-        for element in soup(
+        for tag in soup(
             [
                 "script",
                 "style",
-                "noscript",
                 "nav",
                 "footer",
                 "header",
@@ -546,445 +727,205 @@ def extract_webpage(url):
                 "form",
                 "svg",
                 "iframe",
+                "noscript",
             ]
         ):
+            tag.decompose()
 
-            element.decompose()
-
-        main_content = (
-            soup.find("article")
-            or soup.find("main")
-            or soup.body
-            or soup
+        text = clean_text(
+            soup.get_text(" ")
         )
 
-        text = main_content.get_text(
-            separator=" ",
-            strip=True,
-        )
+        if len(text) > MAX_PAGE_TEXT:
+            text = text[:MAX_PAGE_TEXT]
 
-        text = re.sub(
-            r"\s+",
-            " ",
-            text,
-        ).strip()
-
-        return text[:MAX_SOURCE_TEXT]
+        return text or source["snippet"]
 
     except Exception:
-
-        return ""
-
-
-# ============================================================
-# 12. SEARCH QUERIES
-# ============================================================
-
-def create_search_queries(topic):
-
-    return [
-        f"{topic} 2026",
-        f"{topic} latest research",
-        f"{topic} official report",
-    ]
+        return source["snippet"]
 
 
-# ============================================================
-# 13. DDGS WEB SEARCH
-# ============================================================
+def select_sources(results):
+    """
+    Selects the strongest sources.
+    """
 
-def perform_web_search(
-    topic,
-    progress_callback=None,
-):
-
-    queries = create_search_queries(
-        topic
-    )
-
-    all_results = []
-
-    try:
-
-        with DDGS() as ddgs:
-
-            for index, query in enumerate(
-                queries,
-                start=1,
-            ):
-
-                if progress_callback:
-
-                    progress_callback(
-                        f"🔎 Searching "
-                        f"{index}/{len(queries)}: "
-                        f"{query}"
-                    )
-
-                try:
-
-                    results = list(
-                        ddgs.text(
-                            query,
-                            max_results=MAX_SEARCH_RESULTS_PER_QUERY,
-                        )
-                    )
-
-                except Exception:
-
-                    results = []
-
-                for result in results:
-
-                    url = result.get(
-                        "href",
-                        "",
-                    )
-
-                    if not url:
-
-                        continue
-
-                    all_results.append(
-                        {
-                            "title": result.get(
-                                "title",
-                                "Untitled source",
-                            ),
-                            "url": normalize_url(
-                                url
-                            ),
-                            "snippet": result.get(
-                                "body",
-                                "",
-                            ),
-                        }
-                    )
-
-                time.sleep(0.2)
-
-    except Exception as error:
-
-        raise RuntimeError(
-            f"Web search failed: {error}"
-        )
-
-
-    # Remove duplicates.
-
-    unique = {}
-
-    for result in all_results:
-
-        if result["url"] not in unique:
-
-            unique[result["url"]] = result
-
-    return list(
-        unique.values()
-    )
-
-
-# ============================================================
-# 14. SOURCE SCORING
-# ============================================================
-
-def source_score(source):
-
-    domain = get_domain(
-        source.get(
-            "url",
-            "",
-        )
-    )
-
-    score = 0
-
-    if domain.endswith(".gov"):
-        score += 5
-
-    if domain.endswith(".edu"):
-        score += 4
-
-    if domain.endswith(".org"):
-        score += 2
-
-    important_domains = [
-        "who.int",
-        "worldbank.org",
-        "un.org",
-        "oecd.org",
-        "nih.gov",
-        "nasa.gov",
-        "europa.eu",
-        "nature.com",
-        "reuters.com",
-    ]
-
-    for trusted in important_domains:
-
-        if trusted in domain:
-
-            score += 5
-
-    return score
-
-
-# ============================================================
-# 15. COLLECT EVIDENCE
-# ============================================================
-
-def collect_evidence(
-    candidates,
-    progress_callback=None,
-):
-
-    candidates = sorted(
-        candidates,
+    ranked = sorted(
+        results,
         key=source_score,
-        reverse=True,
+        reverse=True
     )
 
     selected = []
 
-    for candidate in candidates:
+    for item in ranked:
 
-        if len(selected) >= MAX_FINAL_SOURCES:
-
+        if len(selected) >= MAX_SELECTED_SOURCES:
             break
 
-        if progress_callback:
-
-            progress_callback(
-                f"📄 Reading source "
-                f"{len(selected) + 1}/"
-                f"{MAX_FINAL_SOURCES}: "
-                f"{candidate['title'][:60]}"
-            )
-
-        content = extract_webpage(
-            candidate["url"]
-        )
-
-        if not content:
-
-            content = candidate.get(
-                "snippet",
-                "",
-            )[:MAX_SOURCE_TEXT]
-
-        if not content:
-
-            continue
-
-        selected.append(
-            {
-                "title": candidate["title"],
-                "url": candidate["url"],
-                "domain": get_domain(
-                    candidate["url"]
-                ),
-                "content": content,
-            }
-        )
+        selected.append(item)
 
     return selected
 
 
-# ============================================================
-# 16. BUILD SMALL EVIDENCE PACKAGE
-# ============================================================
+def build_evidence(selected_sources):
+    """
+    Creates a very compact evidence package.
+    Keeping this small is important because the
+    current Groq organization has an 8K TPM limit.
+    """
 
-def build_evidence_package(
-    topic,
-    sources,
-):
+    evidence = []
 
-    parts = []
-
-    for index, source in enumerate(
-        sources,
-        start=1,
+    for number, source in enumerate(
+        selected_sources,
+        start=1
     ):
 
-        parts.append(
+        page_text = extract_page(source)
+
+        evidence.append(
             f"""
-SOURCE {index}
-TITLE: {source['title']}
+SOURCE {number}
+Title: {source['title']}
+Domain: {source['domain']}
 URL: {source['url']}
-EVIDENCE: {source['content']}
+
+Evidence:
+{page_text[:MAX_PAGE_TEXT]}
 """.strip()
         )
 
-    evidence = "\n\n".join(
-        parts
+    return "\n\n".join(evidence)
+
+
+def create_agent():
+    """
+    Creates exactly ONE CrewAI agent.
+    """
+
+    groq_key = st.secrets.get("GROQ_API_KEY")
+
+    if not groq_key:
+        raise RuntimeError(
+            "GROQ_API_KEY was not found in Streamlit Secrets."
+        )
+
+    llm = LLM(
+        model="groq/openai/gpt-oss-20b",
+        api_key=groq_key,
+        api_base="https://api.groq.com/openai/v1",
+        temperature=0.3,
     )
 
-    return f"""
-QUESTION:
+    agent = Agent(
+        role="Senior Web Research Analyst",
+
+        goal=(
+            "Analyze the supplied web evidence and create "
+            "an accurate research report. Never invent "
+            "facts, statistics, quotations, sources, or URLs."
+        ),
+
+        backstory=(
+            "You are a careful research analyst. "
+            "You rely only on the evidence supplied to you. "
+            "When evidence is uncertain or conflicting, "
+            "clearly say so."
+        ),
+
+        llm=llm,
+
+        allow_delegation=False,
+
+        verbose=False,
+
+        max_iter=1,
+    )
+
+    return agent
+
+
+def run_research(topic, evidence):
+    """
+    Runs ONE CrewAI agent with ONE task.
+    """
+
+    agent = create_agent()
+
+    task_description = f"""
+Research question:
+
 {topic}
 
-YEAR:
-2026
+Use ONLY the evidence supplied below.
+
+IMPORTANT RULES:
+
+1. Do not invent facts.
+2. Do not invent statistics.
+3. Do not invent quotations.
+4. Do not invent sources.
+5. Do not create URLs that were not supplied.
+6. If the evidence is insufficient, say so.
+7. Distinguish facts from uncertainty.
+8. Mention conflicting evidence when present.
+9. Keep the answer useful and factual.
+10. Cite sources using their supplied URLs.
+
+Write a concise but useful report using these sections:
+
+## Executive Summary
+
+## Key Findings
+
+## Evidence Analysis
+
+## Important Facts
+
+## Uncertainty or Conflicting Evidence
+
+## Practical Implications
+
+## Conclusion
+
+## Sources
+
+The report should be approximately 600-900 words.
 
 WEB EVIDENCE:
+
 {evidence}
-""".strip()
-
-
-# ============================================================
-# 17. SINGLE CREWAI AGENT
-# ============================================================
-
-research_agent = Agent(
-
-    role="Research Analyst",
-
-    goal=(
-        "Analyze the supplied web evidence and "
-        "write an accurate research report."
-    ),
-
-    backstory=(
-        "You are a careful research analyst. "
-        "Use evidence, compare sources, and never "
-        "invent sources, URLs, statistics, or quotations."
-    ),
-
-    llm=crew_llm,
-
-    allow_delegation=False,
-
-    verbose=False,
-
-    max_iter=1,
-
-    reasoning=False,
-)
-
-
-# ============================================================
-# 18. RESEARCH TASK
-# ============================================================
-
-def create_research_task(
-    topic,
-    evidence_package,
-):
-
-    description = f"""
-Research question:
-{topic}
-
-Use ONLY the following verified web evidence:
-
-{evidence_package}
-
-Write a useful research report.
-
-Use these sections:
-
-# Research Report
-
-## 1. Executive Summary
-Summarize the main findings.
-
-## 2. Introduction
-Explain the topic.
-
-## 3. Key Findings
-Explain the important evidence.
-
-## 4. Evidence Comparison
-Compare what the sources say.
-
-## 5. Uncertainty or Conflicting Evidence
-Mention disagreements or missing evidence.
-
-## 6. Conclusion
-Give an evidence-based conclusion.
-
-## 7. Sources
-List the exact source titles and URLs supplied above.
-
-Rules:
-
-- Never invent a source.
-- Never invent a URL.
-- Never invent statistics.
-- Never invent quotations.
-- Use the supplied URLs exactly.
-- If evidence is insufficient, say so.
-- Keep the answer detailed but concise.
 """
 
-    return Task(
-        description=description,
-        agent=research_agent,
+    task = Task(
+        description=task_description,
+
         expected_output=(
-            "A structured research report with "
-            "evidence and source URLs."
+            "A factual research report based only on "
+            "the supplied web evidence, including "
+            "the supplied source URLs."
         ),
+
+        agent=agent,
     )
 
-
-# ============================================================
-# 19. CREATE CREW
-# ============================================================
-
-def create_research_crew(
-    topic,
-    evidence_package,
-):
-
-    task = create_research_task(
-        topic,
-        evidence_package,
-    )
-
-    return Crew(
-        agents=[
-            research_agent
-        ],
-        tasks=[
-            task
-        ],
+    crew = Crew(
+        agents=[agent],
+        tasks=[task],
         process=Process.sequential,
         verbose=False,
     )
 
+    result = crew.kickoff()
 
-# ============================================================
-# 20. CLEAN REPORT
-# ============================================================
-
-def clean_report(result):
-
-    if result is None:
-
-        return ""
-
-    if hasattr(
-        result,
-        "raw",
-    ):
-
-        return result.raw.strip()
-
-    return str(
-        result
-    ).strip()
+    return str(result)
 
 
-# ============================================================
-# 21. PDF GENERATOR
-# ============================================================
-
-def create_pdf(
-    topic,
-    report,
-    sources,
-):
+def create_pdf(topic, report, sources):
+    """
+    Creates a downloadable PDF.
+    """
 
     buffer = BytesIO()
 
@@ -999,131 +940,47 @@ def create_pdf(
 
     styles = getSampleStyleSheet()
 
-    title_style = ParagraphStyle(
-        "CustomTitle",
-        parent=styles["Title"],
-        alignment=TA_CENTER,
-        fontSize=22,
-        leading=28,
-        spaceAfter=18,
-    )
-
-    heading_style = ParagraphStyle(
-        "CustomHeading",
-        parent=styles["Heading2"],
-        fontSize=14,
-        leading=18,
-        spaceBefore=12,
-        spaceAfter=8,
-    )
-
-    body_style = ParagraphStyle(
-        "CustomBody",
-        parent=styles["BodyText"],
-        fontSize=9.5,
-        leading=14,
-        spaceAfter=8,
-    )
-
-    small_style = ParagraphStyle(
-        "Small",
-        parent=styles["BodyText"],
-        fontSize=8,
-        leading=11,
-        textColor=colors.HexColor(
-            "#334155"
-        ),
-    )
-
     story = []
 
     story.append(
         Paragraph(
-            "AI Research Agent",
-            title_style,
+            "AI Research Agent Report",
+            styles["Title"]
         )
     )
 
-    safe_topic = (
-        topic
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
+    story.append(
+        Spacer(1, 12)
     )
 
     story.append(
         Paragraph(
             f"<b>Research Question:</b> "
-            f"{safe_topic}",
-            body_style,
+            f"{html.escape(topic)}",
+            styles["Normal"]
         )
     )
 
     story.append(
-        Spacer(
-            1,
-            0.15 * inch,
-        )
+        Spacer(1, 20)
     )
 
-    for line in report.split("\n"):
+    for paragraph in report.split("\n"):
 
-        line = line.strip()
+        paragraph = paragraph.strip()
 
-        if not line:
-
-            story.append(
-                Spacer(
-                    1,
-                    0.06 * inch,
-                )
-            )
-
+        if not paragraph:
+            story.append(Spacer(1, 8))
             continue
 
-        safe_line = (
-            line
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        safe = html.escape(paragraph)
 
-        safe_line = re.sub(
-            r"\*\*(.*?)\*\*",
-            r"<b>\1</b>",
-            safe_line,
-        )
-
-        if safe_line.startswith(
-            "# "
-        ):
+        if safe.startswith("## "):
 
             story.append(
                 Paragraph(
-                    safe_line[2:],
-                    title_style,
-                )
-            )
-
-        elif safe_line.startswith(
-            "## "
-        ):
-
-            story.append(
-                Paragraph(
-                    safe_line[3:],
-                    heading_style,
-                )
-            )
-
-        elif safe_line.startswith(
-            "### "
-        ):
-
-            story.append(
-                Paragraph(
-                    safe_line[4:],
-                    heading_style,
+                    safe.replace("## ", ""),
+                    styles["Heading2"]
                 )
             )
 
@@ -1131,171 +988,65 @@ def create_pdf(
 
             story.append(
                 Paragraph(
-                    safe_line,
-                    body_style,
+                    safe,
+                    styles["BodyText"]
                 )
             )
 
     story.append(
-        PageBreak()
+        Spacer(1, 20)
     )
 
     story.append(
         Paragraph(
-            "Verified Sources Collected",
-            heading_style,
+            "Verified Web Sources",
+            styles["Heading2"]
         )
     )
 
-    for index, source in enumerate(
-        sources,
-        start=1,
-    ):
+    for source in sources:
 
-        safe_title = (
-            source["title"]
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-
-        safe_url = (
-            source["url"]
-            .replace("&", "&amp;")
+        story.append(
+            Paragraph(
+                html.escape(source["title"]),
+                styles["BodyText"]
+            )
         )
 
         story.append(
             Paragraph(
-                f"<b>{index}. "
-                f"{safe_title}</b><br/>"
-                f"{safe_url}",
-                small_style,
+                html.escape(source["url"]),
+                styles["BodyText"]
             )
         )
 
         story.append(
-            Spacer(
-                1,
-                0.12 * inch,
-            )
+            Spacer(1, 8)
         )
 
-    document.build(
-        story
-    )
+    document.build(story)
 
     buffer.seek(0)
 
-    return buffer.getvalue()
+    return buffer
 
 
 # ============================================================
-# 22. SESSION STATE
+# START RESEARCH
 # ============================================================
 
-if "last_report" not in st.session_state:
+st.markdown("<br>", unsafe_allow_html=True)
 
-    st.session_state[
-        "last_report"
-    ] = ""
-
-
-if "last_sources" not in st.session_state:
-
-    st.session_state[
-        "last_sources"
-    ] = []
-
-
-if "last_topic" not in st.session_state:
-
-    st.session_state[
-        "last_topic"
-    ] = ""
-
-
-# ============================================================
-# 23. USER QUESTION
-# ============================================================
-
-st.markdown(
-    """
-    <div class="section-title">
-        📝 What would you like to research?
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-topic = st.text_area(
-    "Research question",
-    placeholder=(
-        "Example: What are the latest developments "
-        "in artificial intelligence in 2026?"
-    ),
-    height=130,
-    label_visibility="collapsed",
-)
-
-
-# ============================================================
-# 24. EXAMPLE QUESTIONS
-# ============================================================
-
-st.markdown(
-    "**💡 Example research questions**"
-)
-
-
-example_columns = st.columns(
-    3
-)
-
-
-example_questions = [
-    "What are the latest developments in AI in 2026?",
-    "What are the current benefits and risks of renewable energy?",
-    "What recent research exists on cybersecurity threats?",
-]
-
-
-for column, question in zip(
-    example_columns,
-    example_questions,
-):
-
-    with column:
-
-        if st.button(
-            question,
-            use_container_width=True,
-        ):
-
-            topic = question
-
-
-# ============================================================
-# 25. START BUTTON
-# ============================================================
-
-st.markdown("")
-
-
-start_research = st.button(
-    "🚀 Start Research",
+start = st.button(
+    "🔎 Start Research",
     type="primary",
     use_container_width=True,
 )
 
 
-# ============================================================
-# 26. RESEARCH PROCESS
-# ============================================================
+if start:
 
-if start_research:
-
-    if not topic or not topic.strip():
+    if not topic.strip():
 
         st.warning(
             "Please enter a research question first."
@@ -1303,470 +1054,319 @@ if start_research:
 
         st.stop()
 
-    topic = topic.strip()
-
-    st.session_state[
-        "last_topic"
-    ] = topic
-
-    st.session_state[
-        "last_report"
-    ] = ""
-
-    st.session_state[
-        "last_sources"
-    ] = []
-
+    st.session_state.last_report = ""
+    st.session_state.last_sources = []
+    st.session_state.last_topic = topic
 
     # --------------------------------------------------------
-    # STATUS
+    # STEP 1
     # --------------------------------------------------------
 
     with st.status(
-        "🔬 Research in progress...",
-        expanded=True,
+        "🔎 Researching your topic...",
+        expanded=True
     ) as status:
 
-        # ----------------------------------------------------
-        # STEP 1
-        # ----------------------------------------------------
-
         st.write(
-            "📝 Research question received."
+            "🌐 Searching the live web..."
         )
 
-        st.write(
-            f"**Question:** {topic}"
-        )
+        try:
 
+            results = search_web(topic)
+
+        except Exception as e:
+
+            status.update(
+                label="❌ Web search failed",
+                state="error"
+            )
+
+            st.error(str(e))
+
+            st.stop()
+
+        if not results:
+
+            status.update(
+                label="❌ No web sources found",
+                state="error"
+            )
+
+            st.error(
+                "No web sources were found. "
+                "Try a more specific research question."
+            )
+
+            st.stop()
+
+        st.write(
+            f"✓ Found {len(results)} web results"
+        )
 
         # ----------------------------------------------------
         # STEP 2
         # ----------------------------------------------------
 
         st.write(
-            "🧠 Preparing research strategy..."
+            "📚 Selecting relevant sources..."
         )
 
+        selected_sources = select_sources(
+            results
+        )
+
+        st.write(
+            f"✓ Selected {len(selected_sources)} sources"
+        )
 
         # ----------------------------------------------------
         # STEP 3
         # ----------------------------------------------------
 
         st.write(
-            "🔎 Searching current web sources..."
+            "📄 Reading source pages..."
         )
 
-        try:
-
-            candidates = perform_web_search(
-                topic,
-                progress_callback=st.write,
-            )
-
-        except Exception as error:
-
-            status.update(
-                label="❌ Web search failed",
-                state="error",
-            )
-
-            st.error(
-                str(error)
-            )
-
-            st.stop()
-
-
-        if not candidates:
-
-            status.update(
-                label="⚠️ No sources found",
-                state="error",
-            )
-
-            st.warning(
-                "No web sources were found. "
-                "Try another question."
-            )
-
-            st.stop()
-
+        evidence = build_evidence(
+            selected_sources
+        )
 
         st.write(
-            f"✅ Found {len(candidates)} "
-            f"candidate sources."
+            "✓ Evidence extracted"
         )
-
 
         # ----------------------------------------------------
         # STEP 4
         # ----------------------------------------------------
 
         st.write(
-            "📄 Extracting information "
-            "from webpages..."
-        )
-
-        sources = collect_evidence(
-            candidates,
-            progress_callback=st.write,
-        )
-
-
-        if not sources:
-
-            status.update(
-                label="⚠️ Source extraction failed",
-                state="error",
-            )
-
-            st.warning(
-                "Search results were found, but "
-                "their content could not be extracted."
-            )
-
-            st.stop()
-
-
-        st.write(
-            f"✅ Extracted evidence from "
-            f"{len(sources)} sources."
-        )
-
-
-        # ----------------------------------------------------
-        # STEP 5
-        # ----------------------------------------------------
-
-        st.write(
-            "⚖️ Cross-checking evidence "
-            "across sources..."
-        )
-
-        evidence_package = (
-            build_evidence_package(
-                topic,
-                sources,
-            )
-        )
-
-
-        st.write(
-            f"📦 Compact evidence prepared "
-            f"({len(evidence_package):,} characters)."
-        )
-
-
-        # ----------------------------------------------------
-        # STEP 6
-        # ----------------------------------------------------
-
-        st.write(
-            "🤖 AI is analyzing the "
-            "collected evidence..."
+            "🤖 Running the single CrewAI research agent..."
         )
 
         try:
 
-            research_crew = (
-                create_research_crew(
-                    topic,
-                    evidence_package,
-                )
+            report = run_research(
+                topic,
+                evidence
             )
 
-            result = (
-                research_crew.kickoff()
-            )
+        except Exception as e:
 
-            report = clean_report(
-                result
-            )
-
-
-        except Exception as error:
-
-            error_text = str(
-                error
-            )
+            error_text = str(e)
 
             status.update(
                 label="❌ AI analysis failed",
-                state="error",
+                state="error"
             )
 
             st.error(
-                "The AI analysis failed."
+                "The web research completed, but the AI "
+                "analysis request was rejected."
             )
 
-            st.markdown(
-                "**Actual error from Groq/CrewAI:**"
-            )
-
-            st.code(
-                error_text
-            )
-
-            if (
-                "413" in error_text
-                or "Requested" in error_text
-                or "tokens per minute" in error_text
-            ):
+            if "413" in error_text or "rate_limit" in error_text:
 
                 st.warning(
-                    """
-                    The request is still exceeding the
-                    current Groq token limit.
-
-                    The app has already reduced the research
-                    evidence and agent iterations. If this
-                    message appears again, we will reduce the
-                    final report/output budget further instead
-                    of changing the interface.
-                    """
+                    "Groq rejected the request because of "
+                    "the current token-per-minute limit. "
+                    "This version already minimizes the "
+                    "request, so wait a few seconds and "
+                    "try again."
                 )
 
-            st.stop()
+            with st.expander(
+                "Technical error"
+            ):
+                st.code(error_text)
 
-
-        # ----------------------------------------------------
-        # STEP 7
-        # ----------------------------------------------------
-
-        if not report:
-
-            status.update(
-                label="⚠️ No report generated",
-                state="error",
-            )
-
-            st.warning(
-                "The research agent returned no report."
-            )
+            st.session_state.last_sources = selected_sources
 
             st.stop()
 
-
-        st.write(
-            "📊 Formatting the research report..."
-        )
-
-        time.sleep(
-            0.2
-        )
-
-
-        st.write(
-            "🔗 Adding verified source URLs..."
-        )
-
+        # ----------------------------------------------------
+        # SUCCESS
+        # ----------------------------------------------------
 
         status.update(
-            label="✅ Research complete",
-            state="complete",
+            label="✅ Research completed",
+            state="complete"
         )
 
-
-    # --------------------------------------------------------
-    # SAVE RESULTS
-    # --------------------------------------------------------
-
-    st.session_state[
-        "last_report"
-    ] = report
-
-    st.session_state[
-        "last_sources"
-    ] = sources
+    st.session_state.last_report = report
+    st.session_state.last_sources = selected_sources
 
 
 # ============================================================
-# 27. DISPLAY REPORT
+# DISPLAY REPORT
 # ============================================================
 
-if st.session_state.get(
-    "last_report",
-    "",
-):
-
-    report = st.session_state[
-        "last_report"
-    ]
-
-    sources = st.session_state.get(
-        "last_sources",
-        [],
-    )
-
-    topic_used = st.session_state.get(
-        "last_topic",
-        "Research",
-    )
-
-
-    # --------------------------------------------------------
-    # REPORT HEADER
-    # --------------------------------------------------------
+if st.session_state.last_report:
 
     st.markdown(
-        """
-        <div class="section-title">
-            📑 Research Report
-        </div>
-        """,
-        unsafe_allow_html=True,
+        '<div class="report-header">📊 Research Report</div>',
+        unsafe_allow_html=True
     )
-
-
-    st.markdown(
-        """
-        <span class="badge">AI Generated</span>
-        <span class="badge">Web Evidence</span>
-        <span class="badge">Source Checked</span>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-    st.markdown("")
-
-
-    # --------------------------------------------------------
-    # REPORT
-    # --------------------------------------------------------
 
     st.markdown(
         '<div class="report-box">',
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
     st.markdown(
-        report
+        st.session_state.last_report
     )
 
     st.markdown(
-        "</div>",
-        unsafe_allow_html=True,
+        '</div>',
+        unsafe_allow_html=True
     )
 
 
-    # ========================================================
-    # VERIFIED SOURCES
-    # ========================================================
+# ============================================================
+# DISPLAY SOURCES
+# ============================================================
+
+if st.session_state.last_sources:
 
     st.markdown(
-        """
-        <div class="section-title">
-            🔗 Verified Sources Used
-        </div>
-        """,
-        unsafe_allow_html=True,
+        '<div class="report-header">🔗 Verified Web Sources</div>',
+        unsafe_allow_html=True
     )
 
+    for source in st.session_state.last_sources:
 
-    st.caption(
-        "These URLs were collected directly by the "
-        "web-search process."
-    )
+        title = html.escape(
+            source.get("title", "Untitled")
+        )
 
+        domain = html.escape(
+            source.get("domain", "")
+        )
 
-    for index, source in enumerate(
-        sources,
-        start=1,
-    ):
+        url = html.escape(
+            source.get("url", "")
+        )
+
+        snippet = html.escape(
+            source.get("snippet", "")
+        )
 
         st.markdown(
             f"""
             <div class="source-card">
 
                 <div class="source-title">
-                    {index}. {source['title']}
-                </div>
-
-                <div class="source-url">
-                    {source['url']}
+                    {title}
                 </div>
 
                 <div class="source-domain">
-                    🌐 {source['domain']}
+                    {domain}
+                </div>
+
+                <div class="source-url">
+                    {url}
+                </div>
+
+                <div style="
+                    margin-top:10px;
+                    color:#94a3b8;
+                    font-size:13px;
+                    line-height:1.5;
+                ">
+                    {snippet}
                 </div>
 
             </div>
             """,
-            unsafe_allow_html=True,
-        )
-
-        st.link_button(
-            "🔗 Open source",
-            source["url"],
+            unsafe_allow_html=True
         )
 
 
-    # ========================================================
-    # DOWNLOADS
-    # ========================================================
+# ============================================================
+# DOWNLOADS
+# ============================================================
+
+if st.session_state.last_report:
 
     st.markdown(
-        """
-        <div class="section-title">
-            ⬇️ Download Research
-        </div>
-        """,
-        unsafe_allow_html=True,
+        '<div class="report-header">⬇️ Download Report</div>',
+        unsafe_allow_html=True
     )
 
+    col1, col2 = st.columns(2)
 
-    pdf_bytes = create_pdf(
-        topic_used,
-        report,
-        sources,
+    report_text = (
+        f"AI RESEARCH AGENT\n\n"
+        f"Research Question:\n"
+        f"{st.session_state.last_topic}\n\n"
+        f"{st.session_state.last_report}\n\n"
+        f"VERIFIED SOURCES\n\n"
     )
 
+    for source in st.session_state.last_sources:
 
-    download_columns = st.columns(
-        2
-    )
-
-
-    with download_columns[0]:
-
-        st.download_button(
-            label="📄 Download PDF Report",
-            data=pdf_bytes,
-            file_name="AI_Research_Report.pdf",
-            mime="application/pdf",
-            use_container_width=True,
+        report_text += (
+            f"{source['title']}\n"
+            f"{source['url']}\n\n"
         )
 
-
-    with download_columns[1]:
+    with col1:
 
         st.download_button(
-            label="📝 Download TXT Report",
-            data=report,
-            file_name="AI_Research_Report.txt",
+            "📄 Download TXT",
+            data=report_text,
+            file_name="research_report.txt",
             mime="text/plain",
             use_container_width=True,
         )
 
+    with col2:
+
+        try:
+
+            pdf = create_pdf(
+                st.session_state.last_topic,
+                st.session_state.last_report,
+                st.session_state.last_sources,
+            )
+
+            st.download_button(
+                "📕 Download PDF",
+                data=pdf,
+                file_name="research_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+        except Exception as e:
+
+            st.warning(
+                f"PDF generation unavailable: {e}"
+            )
+
 
 # ============================================================
-# 28. FOOTER
+# FOOTER
 # ============================================================
 
 st.markdown(
     """
+    <br><br>
+
     <div style="
         text-align:center;
-        margin-top:50px;
-        padding:20px;
         color:#64748b;
-        font-size:13px;
+        padding:20px;
+        border-top:1px solid rgba(148,163,184,0.10);
     ">
-        AI Research Agent • One CrewAI Agent •
-        Live Web Research • Groq
+
+        AI Research Agent ·
+        One CrewAI Agent ·
+        Live Web Research ·
+        Groq
+
     </div>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
